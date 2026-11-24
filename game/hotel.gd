@@ -6,27 +6,24 @@ const Sound = preload("res://game/sound.gd")
 const ACTIVE_COUNTS := [2, 3, 4, 5, 6]
 const SHIFT_NAMES := ["أول وردية", "أصوات بالممر", "آخر ليلة للمدير", "المفتاح صار لك", "الجناح السادس"]
 const TASK_NAMES := ["كنس الأرض", "مسح الأرض", "تغيير الشراشف", "إصلاح الأثاث"]
-const TASK_TIMES := [0.48, 0.82, 1.0, 1.28]
 const WAGES := [45, 65, 90]
 const SAVE_PATH := "user://hotel-%d.json"
 const UPGRADE_NAMES := ["عربة تنظيف أسرع", "أقفال تحمي الأثاث", "تجهيزات للضيوف"]
 const UPGRADE_COSTS := [140, 210, 300]
 const NO_POINTER := -2
 const MOUSE_POINTER := -1
-const DRAG_THRESHOLD := 8.0
-const DRAG_SCALE := 0.46
-const WALK_SPEED := 96.0
+const STICK_DEAD_ZONE := 10.0
+const STICK_RADIUS := 53.0
+const WALK_SPEED := 122.0
 
 var world: Node2D
 var ui: Control
 var sound: Node
 var player := World.START
 var target := Vector2i(-1, -1)
-var working_on := Vector2i(-1, -1)
-var facing := 1
+var facing := 0
 var walking := false
 var elapsed := 0.0
-var task_progress := 0.0
 var rooms: Array = []
 var active_rooms := 2
 var shift := 1
@@ -48,12 +45,9 @@ var muted := false
 var save_revision := 0
 var has_save := false
 var pointer := NO_POINTER
-var pointer_position := Vector2.ZERO
-var drag_distance := 0.0
+var gesture_origin := Vector2.ZERO
+var walk_intent := Vector2.ZERO
 var dragging := false
-var last_drag := -1.0
-var tap_work := Vector2i(-1, -1)
-var awaiting_release := true
 var rng := RandomNumberGenerator.new()
 
 
@@ -87,7 +81,7 @@ func _process(delta: float) -> void:
 	ghost_time = maxf(0.0, ghost_time - delta)
 	notice_time = maxf(0.0, notice_time - delta)
 	move_worker(delta)
-	update_task(delta)
+	target = find_target()
 	update_haunting(delta)
 	update_sparks(delta)
 	ui.refresh_live()
@@ -126,29 +120,23 @@ func begin_gesture(index: int, point: Vector2) -> void:
 	if ui.blocks_gesture_at(point):
 		return
 	pointer = index
-	pointer_position = point
-	drag_distance = 0.0
+	gesture_origin = point
+	walk_intent = Vector2.ZERO
 	dragging = false
 
 
 func drag_gesture(point: Vector2) -> void:
-	var motion := point - pointer_position
-	pointer_position = point
-	drag_distance += motion.length()
-	if drag_distance < DRAG_THRESHOLD:
+	var offset := point - gesture_origin
+	var distance := offset.length()
+	if distance <= STICK_DEAD_ZONE:
+		walk_intent = Vector2.ZERO
 		return
-	if not dragging:
-		tap_work = Vector2i(-1, -1)
-		task_progress = 0.0
-		dragging = true
-	if motion.is_zero_approx():
-		return
-	var old := player
-	apply_motion(motion / world.scale * DRAG_SCALE)
-	if player.distance_squared_to(old) > 0.01:
-		last_drag = elapsed
-	if absf(motion.x) > 0.1:
-		facing = 1 if motion.x > 0 else -1
+	dragging = true
+	var direction := offset / distance
+	if distance > STICK_RADIUS:
+		gesture_origin = point - direction * STICK_RADIUS
+	var strength := clampf((distance - STICK_DEAD_ZONE) / (STICK_RADIUS - STICK_DEAD_ZONE), 0.0, 1.0)
+	walk_intent = direction * lerpf(0.32, 1.0, strength)
 
 
 func end_gesture(canceled: bool) -> void:
@@ -160,7 +148,7 @@ func end_gesture(canceled: bool) -> void:
 
 func clear_gesture() -> void:
 	pointer = NO_POINTER
-	last_drag = -1.0
+	walk_intent = Vector2.ZERO
 	dragging = false
 
 
@@ -168,8 +156,10 @@ func tap_interact() -> void:
 	if paused or ui.needs_rotation:
 		return
 	target = find_target()
-	if target.x != -1:
-		tap_work = target
+	if target == Vector2i(-2, -2):
+		finish_shift()
+	elif target.x >= 0:
+		ui.show_chore(target)
 
 
 func _unhandled_key_input(event: InputEvent) -> void:
@@ -186,9 +176,8 @@ func _unhandled_key_input(event: InputEvent) -> void:
 		KEY_U:
 			if is_owner() and not paused:
 				ui.show_shop()
-		KEY_ENTER:
-			if not paused and target == Vector2i(-2, -2):
-				finish_shift()
+		KEY_E, KEY_SPACE, KEY_ENTER:
+			tap_interact()
 
 
 func start_shift(number: int) -> void:
@@ -213,16 +202,13 @@ func start_shift(number: int) -> void:
 	notice_time = 0.0
 	sparks.clear()
 	player = World.START
+	facing = 0
 	reset_interaction()
 
 
 func reset_interaction() -> void:
 	target = Vector2i(-1, -1)
-	working_on = target
-	task_progress = 0.0
-	tap_work = Vector2i(-1, -1)
 	clear_gesture()
-	awaiting_release = true
 	walking = false
 
 
@@ -246,12 +232,15 @@ func toggle_sound() -> void:
 func move_worker(delta: float) -> void:
 	var horizontal := int(down(KEY_D) or down(KEY_RIGHT)) - int(down(KEY_A) or down(KEY_LEFT))
 	var vertical := int(down(KEY_S) or down(KEY_DOWN)) - int(down(KEY_W) or down(KEY_UP))
-	var direction := Vector2(horizontal, vertical).limit_length()
+	var direction := (Vector2(horizontal, vertical) + walk_intent).limit_length()
 	var old := player
-	apply_motion(direction * WALK_SPEED * delta)
-	walking = player.distance_squared_to(old) > 0.01 or (dragging and elapsed - last_drag < 0.1)
-	if absf(direction.x) > 0.1:
-		facing = 1 if direction.x > 0 else -1
+	apply_motion(direction / world.scale * WALK_SPEED * delta)
+	walking = player.distance_squared_to(old) > 0.01
+	if direction.length_squared() > 0.01:
+		if absf(direction.x) > absf(direction.y):
+			facing = 1 if direction.x > 0 else 3
+		else:
+			facing = 0 if direction.y > 0 else 2
 
 
 func apply_motion(motion: Vector2) -> void:
@@ -276,30 +265,6 @@ func down(code: Key) -> bool:
 	return Input.is_physical_key_pressed(code)
 
 
-func update_task(delta: float) -> void:
-	target = find_target()
-	var keyboard_pressed := down(KEY_E) or down(KEY_SPACE)
-	if not keyboard_pressed:
-		awaiting_release = false
-	if target != tap_work:
-		tap_work = Vector2i(-1, -1)
-	var pressed := tap_work.x != -1 or (keyboard_pressed and not awaiting_release)
-	if target != working_on or not pressed:
-		task_progress = 0.0
-		working_on = target
-	if not pressed:
-		return
-	if target == Vector2i(-2, -2):
-		finish_shift()
-		return
-	if target.x < 0:
-		return
-	var speed := 1.5 if upgrades[0] and target.y < 3 else 1.0
-	task_progress = minf(1.0, task_progress + delta * speed / TASK_TIMES[target.y])
-	if task_progress >= 1.0:
-		complete_task(target)
-
-
 func find_target() -> Vector2i:
 	if all_done() and player.distance_to(World.DESK + Vector2(0, 33)) < 48:
 		return Vector2i(-2, -2)
@@ -320,9 +285,6 @@ func find_target() -> Vector2i:
 
 func complete_task(work: Vector2i) -> void:
 	rooms[work.x][work.y] -= 1
-	if rooms[work.x][work.y] == 0:
-		tap_work = Vector2i(-1, -1)
-	task_progress = 0.0
 	spawn_sparks(World.station(work.x, work.y), World.TASK_COLORS[work.y])
 	if room_done(work.x):
 		sound.play_cue("room")
@@ -332,8 +294,9 @@ func complete_task(work: Vector2i) -> void:
 			announce("غرفة %d جاهزة للضيوف." % World.ROOM_NUMBERS[work.x], 3.0)
 	else:
 		sound.play_cue("work")
+		announce("أنجزت مهمة: %s." % TASK_NAMES[work.y], 2.4)
 	save_game()
-	ui.refresh()
+	resume()
 
 
 func remaining_tasks() -> int:
