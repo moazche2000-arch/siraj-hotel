@@ -18,10 +18,12 @@ const STICK_RADIUS := 53.0
 const WALK_SPEED := 122.0
 
 var world: Node2D
+var map_view: Control
 var ui: Control
 var sound: Node
 var player := World.START
 var target := Vector2i(-1, -1)
+var last_target_position := Vector2.INF
 var facing := 0
 var walking := false
 var elapsed := 0.0
@@ -41,7 +43,11 @@ var ghost_position := Vector2.ZERO
 var sparks: Array[Dictionary] = []
 var notice := ""
 var notice_time := 0.0
-var paused := true
+var paused := true:
+	set(value):
+		paused = value
+		if is_instance_valid(sound):
+			sound.set_ambience_paused(value)
 var muted := false
 var save_revision := 0
 var has_save := false
@@ -53,13 +59,21 @@ var rng := RandomNumberGenerator.new()
 
 
 func _ready() -> void:
+	if OS.has_feature("android"):
+		Engine.max_fps = 30
+		OS.low_processor_usage_mode = true
+		DisplayServer.screen_set_keep_on(false)
 	rng.randomize()
 	load_game()
 	if not has_save:
 		start_shift(1)
 	world = World.new()
 	world.game = self
-	add_child(world)
+	map_view = Control.new()
+	map_view.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	map_view.clip_contents = true
+	add_child(map_view)
+	map_view.add_child(world)
 	sound = Sound.new()
 	add_child(sound)
 	sound.set_muted(muted)
@@ -76,26 +90,44 @@ func _ready() -> void:
 
 
 func _process(delta: float) -> void:
-	if ui.needs_rotation:
+	if paused or ui.needs_rotation:
 		return
 	elapsed += delta
-	world.queue_redraw()
-	ui.animate(delta)
-	if paused:
-		return
+	var previous_flash := haunt_flash
+	var notice_visible := notice_time > 0.0
+	var had_effects := has_world_effects()
 	haunt_flash = move_toward(haunt_flash, 0.0, delta * 1.3)
 	ghost_time = maxf(0.0, ghost_time - delta)
 	notice_time = maxf(0.0, notice_time - delta)
 	move_worker(delta)
-	target = find_target()
+	if player != last_target_position:
+		last_target_position = player
+		update_target()
 	update_haunting(delta)
 	update_sparks(delta)
-	ui.refresh_live()
+	world.follow_player(delta)
+	world.update_actors(had_effects or has_world_effects())
+	if previous_flash != haunt_flash:
+		ui.update_flash()
+	if notice_visible and notice_time <= 0.0:
+		ui.refresh_live()
+
+
+func has_world_effects() -> bool:
+	return haunt_flash > 0.0 or ghost_time > 0.0 or not sparks.is_empty()
 
 
 func _notification(what: int) -> void:
-	if what == NOTIFICATION_APPLICATION_FOCUS_OUT:
-		clear_gesture()
+	match what:
+		NOTIFICATION_APPLICATION_FOCUS_OUT:
+			clear_gesture()
+		NOTIFICATION_APPLICATION_PAUSED, NOTIFICATION_APPLICATION_RESUMED:
+			if OS.has_feature("android"):
+				var backgrounded := what == NOTIFICATION_APPLICATION_PAUSED
+				clear_gesture()
+				process_mode = PROCESS_MODE_DISABLED if backgrounded else PROCESS_MODE_INHERIT
+				if is_instance_valid(sound):
+					sound.set_backgrounded(backgrounded)
 
 
 func _unhandled_input(event: InputEvent) -> void:
@@ -161,7 +193,7 @@ func clear_gesture() -> void:
 func tap_interact() -> void:
 	if paused or ui.needs_rotation:
 		return
-	target = find_target()
+	update_target()
 	if target == Vector2i(-2, -2):
 		finish_shift()
 	elif target.x >= 0:
@@ -210,10 +242,17 @@ func start_shift(number: int) -> void:
 	player = World.START
 	facing = 0
 	reset_interaction()
+	if is_instance_valid(world):
+		world.follow_player(0.0, true)
+		world.queue_redraw()
+		world.update_actors(true)
 
 
 func reset_interaction() -> void:
+	if target.x >= 0 and is_instance_valid(world):
+		world.queue_redraw()
 	target = Vector2i(-1, -1)
+	last_target_position = Vector2.INF
 	clear_gesture()
 	walking = false
 
@@ -272,6 +311,14 @@ func down(code: Key) -> bool:
 	return Input.is_physical_key_pressed(code)
 
 
+func update_target() -> void:
+	var nearby := find_target()
+	if nearby != target:
+		target = nearby
+		world.queue_redraw()
+		ui.refresh_live()
+
+
 func find_target() -> Vector2i:
 	if all_done() and player.distance_to(World.DESK + Vector2(0, 33)) < 48:
 		return Vector2i(-2, -2)
@@ -292,6 +339,7 @@ func find_target() -> Vector2i:
 
 func complete_task(work: Vector2i) -> void:
 	rooms[work.x][work.y] -= 1
+	world.queue_redraw()
 	spawn_sparks(World.station(work.x, work.y), World.TASK_COLORS[work.y])
 	if room_done(work.x):
 		sound.play_cue("room")
@@ -349,6 +397,8 @@ func trigger_haunt() -> void:
 	if task == 3 and rooms[index][3] > 0:
 		task = 0
 	rooms[index][task] += 1
+	world.queue_redraw()
+	update_target()
 	task_total += 1
 	haunt_count += 1
 	haunt_timer = rng.randf_range(22.0, 34.0)
@@ -422,6 +472,8 @@ func buy_upgrade(index: int) -> void:
 func announce(message: String, duration: float) -> void:
 	notice = message
 	notice_time = duration
+	if is_instance_valid(ui):
+		ui.refresh_live()
 
 
 func save_game() -> void:
