@@ -1,7 +1,7 @@
 extends RefCounted
 
 const PATH := "user://hotel-%d.json"
-const VERSION := 1
+const VERSION := 2
 const ROOM_COUNT := 6
 const TASK_COUNT := 4
 const MAX_FILE_BYTES := 16 * 1024
@@ -58,10 +58,34 @@ static func read_slot(path: String) -> Dictionary:
 	if version < 0 or revision < 1:
 		push_warning("Save %s is missing a valid revision or format version." % path.get_file())
 		return {}
-	var complete := has_complete_state(data)
+	var complete := has_management_state(data) if version == VERSION else has_complete_state(data)
 	if not complete:
 		push_warning("Save %s has missing or invalid fields." % path.get_file())
 	return {"version": version, "revision": revision, "complete": complete, "data": data}
+
+
+static func has_management_state(data: Dictionary) -> bool:
+	if integer(data.get("day"), 0) < 1 or not data.get("muted") is bool or not data.get("employee") is bool:
+		return false
+	if signed_integer(data.get("cash"), -MAX_INTEGER) == -MAX_INTEGER:
+		return false
+	var rooms: Variant = data.get("rooms")
+	var waiting: Variant = data.get("waiting")
+	var upgrades: Variant = data.get("upgrades")
+	if not rooms is Array or rooms.size() != ROOM_COUNT or not waiting is Array or waiting.size() > 3:
+		return false
+	if not upgrades is Array or upgrades.size() != 3:
+		return false
+	for room: Variant in rooms:
+		if not room is Dictionary or not room.get("open") is bool or not room.get("guest") is Dictionary:
+			return false
+		var items: Variant = room.get("items")
+		if not items is Array or items.size() != 6:
+			return false
+		for item: Variant in items:
+			if integer(item, -1, 14) < 0:
+				return false
+	return true
 
 
 static func has_complete_state(data: Dictionary) -> bool:
@@ -86,6 +110,18 @@ static func has_complete_state(data: Dictionary) -> bool:
 static func integer(value: Variant, fallback: int, maximum: int = MAX_INTEGER) -> int:
 	if (value is int or value is float) and value >= 0 and value <= maximum and int(value) == value:
 		return int(value)
+	return fallback
+
+
+static func signed_integer(value: Variant, fallback: int) -> int:
+	if (value is int or value is float) and value >= -MAX_INTEGER and value <= MAX_INTEGER and int(value) == value:
+		return int(value)
+	return fallback
+
+
+static func number(value: Variant, fallback: float, maximum: float) -> float:
+	if (value is int or value is float) and is_finite(value):
+		return clampf(value, 0.0, maximum)
 	return fallback
 
 

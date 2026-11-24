@@ -1,5 +1,6 @@
 extends Node2D
 
+const Rules = preload("res://game/settings.gd")
 const MAP_SIZE := Vector2(902, 566)
 const START := Vector2(458, 315)
 const DESK := Vector2(458, 264)
@@ -8,8 +9,8 @@ const ROOM_RECTS := [
 	Rect2(21, 23, 274, 190), Rect2(314, 23, 274, 190), Rect2(607, 23, 274, 190),
 	Rect2(21, 348, 274, 190), Rect2(314, 348, 274, 190), Rect2(607, 348, 274, 190),
 ]
-const TASK_COUNT := 4
-const TASK_COLORS := [Color("#f4bd75"), Color("#92c2b0"), Color("#f9e0aa"), Color("#ed9d81")]
+const SLOT_CENTERS := [Vector2(60, 55), Vector2(211, 55), Vector2(60, 100), Vector2(211, 100), Vector2(60, 149), Vector2(211, 149)]
+const FURNITURE_DRAW_SIZE := [103.0, 94.0, 69.0, 99.0, 54.0, 93.0, 83.0]
 const GOLD := Color("#e5b874")
 const READY := Color("#c6d49a")
 const SHADOW := Color("#291d16")
@@ -17,6 +18,8 @@ const FONT = preload("res://assets/Arabic.ttf")
 const HOTEL = preload("res://assets/hotel-floor.png")
 const WORKER = preload("res://assets/worker.png")
 const JINN = preload("res://assets/jinn.png")
+const FURNITURE = preload("res://assets/furniture.png")
+const GUESTS = preload("res://assets/guests.png")
 const FRAME := Vector2(128, 128)
 const CORRIDOR_ZOOM := 2.2
 const CAMERA_FOLLOW_SPEED := 7.0
@@ -53,7 +56,9 @@ func configure_camera(view: Vector2) -> void:
 func follow_player(delta: float, snap: bool = false) -> void:
 	if view_size == Vector2.ZERO or not is_instance_valid(game) or not game.player.is_finite():
 		return
-	var room := room_at(game.player, game.active_rooms)
+	var room := room_at(game.player)
+	if not game.business.is_open(room):
+		room = -1
 	if focused_room != room:
 		focused_room = room
 		transition_age = 0.0
@@ -83,7 +88,7 @@ func follow_player(delta: float, snap: bool = false) -> void:
 	elif position.distance_squared_to(goal_position) >= 0.16:
 		next_position = position.lerp(goal_position, 1.0 - exp(-CAMERA_FOLLOW_SPEED * delta))
 	next_position = clamp_camera(next_position, next_zoom)
-	if scale.x != next_zoom:
+	if not is_equal_approx(scale.x, next_zoom):
 		scale = Vector2.ONE * next_zoom
 	if position != next_position:
 		position = next_position
@@ -107,25 +112,11 @@ static func room_rect(index: int) -> Rect2:
 	return ROOM_RECTS[index] if index >= 0 and index < ROOM_RECTS.size() else Rect2()
 
 
-static func room_at(point: Vector2, active_rooms: int) -> int:
-	for index in clampi(active_rooms, 0, ROOM_RECTS.size()):
+static func room_at(point: Vector2) -> int:
+	for index in ROOM_RECTS.size():
 		if ROOM_RECTS[index].has_point(point):
 			return index
 	return -1
-
-
-static func station(index: int, task: int) -> Vector2:
-	var room := room_rect(index)
-	var facing_y := 139.0 if index < 3 else 86.0
-	match task:
-		0:
-			return room.position + Vector2(79, facing_y)
-		1:
-			return room.position + Vector2(165, facing_y)
-		2:
-			return room.position + Vector2(70, 70 if index < 3 else 132)
-		_:
-			return room.position + Vector2(227, 70 if index < 3 else 132)
 
 
 static func door(index: int) -> Vector2:
@@ -133,36 +124,36 @@ static func door(index: int) -> Vector2:
 	return Vector2(room.get_center().x, room.end.y if index < 3 else room.position.y)
 
 
-static func bed_rect(index: int) -> Rect2:
-	return Rect2(room_rect(index).position + Vector2(25, 78 if index < 3 else 139), Vector2(89, 41))
+static func slot_center(index: int, slot: int) -> Vector2:
+	if slot < 0 or slot >= SLOT_CENTERS.size():
+		return room_rect(index).get_center()
+	return room_rect(index).position + Vector2(SLOT_CENTERS[slot])
 
 
-static func cabinet_rect(index: int) -> Rect2:
-	return Rect2(room_rect(index).position + Vector2(208, 84 if index < 3 else 146), Vector2(43, 23))
+static func furniture_bounds(index: int, slot: int, item: int) -> Rect2:
+	var kind := Rules.item_kind(item)
+	if kind < 0:
+		return Rect2()
+	var footprint: Vector2 = Rules.ITEM_FOOTPRINTS[kind]
+	return Rect2(slot_center(index, slot) - footprint * 0.5, footprint)
 
 
-static func has_task_station(index: int, task: int) -> bool:
-	var room := room_rect(index)
-	if not room.has_area() or task < 0 or task >= TASK_COUNT:
+static func floor_contains(point: Vector2, business: RefCounted) -> bool:
+	if not point.is_finite() or not is_instance_valid(business):
 		return false
-	var point := station(index, task)
-	match task:
-		2:
-			return bed_rect(index).has_point(point + Vector2(0, 22))
-		3:
-			return cabinet_rect(index).has_point(point + Vector2(0, 23))
-		_:
-			return room.grow(-9).has_point(point) and not bed_rect(index).has_point(point) and not cabinet_rect(index).has_point(point)
-
-
-static func floor_contains(point: Vector2, active_rooms: int) -> bool:
 	if Rect2(24, 219, 846, 123).has_point(point):
-		return not Rect2(402, 244, 112, 36).has_point(point)
-	for index in clampi(active_rooms, 0, ROOM_RECTS.size()):
+		return not Rect2(402, 244, 112, 36).grow(4).has_point(point)
+	for index in ROOM_RECTS.size():
+		if not business.is_open(index):
+			continue
 		var room := room_rect(index)
-		if room.grow(-9).has_point(point):
-			return not (bed_rect(index).has_point(point) or cabinet_rect(index).has_point(point))
-		if Rect2(door(index) - Vector2(28, 22), Vector2(56, 44)).has_point(point):
+		if room.grow(-10).has_point(point):
+			for slot in Rules.SLOT_COUNT:
+				var footprint := furniture_bounds(index, slot, business.slot_item(index, slot))
+				if footprint.has_area() and footprint.grow(4).has_point(point):
+					return false
+			return true
+		if Rect2(door(index) - Vector2(26, 20), Vector2(52, 40)).has_point(point):
 			return true
 	return false
 
@@ -171,11 +162,19 @@ func _draw() -> void:
 	draw_texture_rect(HOTEL, Rect2(Vector2.ZERO, MAP_SIZE), false)
 	if not is_instance_valid(game):
 		return
+	var business: RefCounted = game.business
+	if not is_instance_valid(business):
+		return
 	for index in ROOM_RECTS.size():
 		draw_room_state(index)
 	draw_plate(Vector2(416, 222), "الاستقبال", 84, GOLD)
-	if game.all_done():
-		draw_circle(DESK + Vector2(0, 34), 13, READY, false, 2)
+	for index in business.waiting.size():
+		draw_guest(Vector2(510 + index * 31, 311), business.waiting[index].look)
+	if business.employee:
+		var position_in_hotel := Vector2(369, 309)
+		if business.is_open(business.cleaner_room):
+			position_in_hotel = room_rect(business.cleaner_room).get_center() + Vector2(0, 35)
+		draw_texture_rect_region(WORKER, Rect2(position_in_hotel - Vector2(24, 33), Vector2(48, 48)), Rect2(Vector2.ZERO, FRAME), Color("#bbcb92"))
 
 
 func draw_actors() -> void:
@@ -210,68 +209,46 @@ func draw_room_mask() -> void:
 
 func draw_room_state(index: int) -> void:
 	var room := room_rect(index)
-	if not game.is_room_open(index):
-		draw_rect(room.grow(-4), Color(0.085, 0.063, 0.043, 0.71))
+	var business: RefCounted = game.business
+	if not business.is_open(index):
 		var center := door(index)
 		var closed := Rect2(center - Vector2(28, 7), Vector2(56, 14))
 		draw_rect(closed, Color("#4d3829"))
 		draw_rect(closed, Color("#826045"), false)
-		for offset in range(-24, 25, 8):
-			draw_line(center + Vector2(offset, -6), center + Vector2(offset, 6), Color("#735439"))
-		draw_plate(room.position + Vector2(52, 5), str(ROOM_NUMBERS[index]), 45, Color("#9d825b"))
 		return
 	draw_plate(room.position + Vector2(52, 5), str(ROOM_NUMBERS[index]), 45, GOLD)
-	if game.room_done(index):
-		var badge := room.position + Vector2(252, 16)
-		draw_circle(badge, 8, Color("#404b2b"))
-		draw_polyline(PackedVector2Array([badge + Vector2(-4, 0), badge + Vector2(-1, 3), badge + Vector2(4, -3)]), READY, 1.7)
-		return
-	for task in TASK_COUNT:
-		if game.task_count(index, task) > 0:
-			draw_task(index, task)
+	var state: Dictionary = business.rooms[index]
+	var center := room.get_center()
+	if state.clean < Rules.CLEANING_THRESHOLD:
+		for offset in [-11, 2, 14]:
+			draw_circle(center + Vector2(offset, 47 + offset * 0.25), 3, Color("#b3996e"))
+	if state.incident == Rules.Task.LEAK:
+		draw_set_transform(center + Vector2(0, 37), 0.0, Vector2(1.65, 0.62))
+		draw_circle(Vector2.ZERO, 12, Color(0.26, 0.56, 0.58, 0.78))
+		draw_set_transform(Vector2.ZERO)
+	for slot in Rules.SLOT_COUNT:
+		var item: int = business.slot_item(index, slot)
+		var spot := slot_center(index, slot)
+		if item < 1:
+			draw_rect(Rect2(spot - Vector2(29, 17), Vector2(58, 34)), Color(0.93, 0.76, 0.57, 0.18), false, 1)
+			continue
+		var item_size: float = FURNITURE_DRAW_SIZE[Rules.item_kind(item)]
+		var tile := item - 1
+		var region := Rect2(Vector2(tile % 4, tile >> 2) * FRAME, FRAME)
+		var broken: bool = business.broken_at(index, slot)
+		draw_texture_rect_region(FURNITURE, Rect2(spot - Vector2.ONE * item_size * 0.5, Vector2.ONE * item_size), region, Color("#d4987c") if broken else Color.WHITE)
+		if broken:
+			draw_line(spot + Vector2(-8, -3), spot + Vector2(4, 0), Color("#e28f70"), 2)
+			draw_line(spot + Vector2(4, 0), spot + Vector2(-2, 9), Color("#e28f70"), 2)
+	if not state.guest.is_empty():
+		draw_guest(center + Vector2(0, -27), state.guest.look)
+		if state.request >= 0 or state.incident >= 0:
+			draw_circle(center + Vector2(11, -57), 5, GOLD)
 
 
-func draw_task(index: int, task: int) -> void:
-	var pos := station(index, task)
-	var color: Color = TASK_COLORS[task]
-	match task:
-		0:
-			for offset in [Vector2(-6, 1), Vector2(8, 7), Vector2(1, -6), Vector2(12, -3), Vector2(-10, 6)]:
-				draw_circle(pos + offset, 3, Color("#a57950"))
-				draw_circle(pos + offset - Vector2(0, 1), 1, Color("#d3a772"))
-		1:
-			draw_set_transform(pos, 0, Vector2(1.6, 0.65))
-			draw_circle(Vector2.ZERO, 12, Color(0.20, 0.53, 0.58, 0.68))
-			draw_arc(Vector2(1, 0), 9, 0.2, 1.9, 12, color, 1.4, true)
-			draw_set_transform(Vector2.ZERO)
-		2:
-			var bed := pos + Vector2(0, 22)
-			draw_polyline(PackedVector2Array([bed + Vector2(-5, 1), bed + Vector2(4, -3), bed + Vector2(9, 1), bed + Vector2(17, -2)]), Color("#6b4733"), 3)
-		3:
-			var cabinet := pos + Vector2(0, 23)
-			draw_polyline(PackedVector2Array([cabinet + Vector2(4, -9), cabinet + Vector2(-3, -3), cabinet + Vector2(5, 4), cabinet + Vector2(-2, 11)]), color, 2)
-	var ping := pos + Vector2(0, -12)
-	var selected: bool = game.target.x == index and game.target.y == task
-	draw_set_transform(ping)
-	draw_circle(Vector2.ZERO, 14 if selected else 11, SHADOW)
-	draw_circle(Vector2.ZERO, 13 if selected else 10, color, false, 1.5)
-	draw_task_symbol(task, color)
-	draw_set_transform(Vector2.ZERO)
-
-
-func draw_task_symbol(task: int, color: Color) -> void:
-	match task:
-		0:
-			draw_line(Vector2(3, -6), Vector2(-2, 1), color, 2)
-			draw_colored_polygon(PackedVector2Array([Vector2(-1, -1), Vector2(3, 2), Vector2(1, 6), Vector2(-6, 2)]), color)
-		1:
-			draw_colored_polygon(PackedVector2Array([Vector2(0, -6), Vector2(4, 0), Vector2(4, 4), Vector2(0, 6), Vector2(-4, 4), Vector2(-4, 0)]), color)
-		2:
-			draw_rect(Rect2(-6, -3, 12, 7), color)
-			draw_line(Vector2(-2, -3), Vector2(-2, 4), SHADOW)
-		3:
-			draw_line(Vector2(-4, 5), Vector2(3, -4), color, 2)
-			draw_line(Vector2(0, -5), Vector2(6, 0), color, 3)
+func draw_guest(at: Vector2, look: int) -> void:
+	var source := Rect2(Vector2(clampi(look, 0, 3), 0) * FRAME, FRAME)
+	draw_texture_rect_region(GUESTS, Rect2(at - Vector2(25, 34), Vector2(50, 50)), source)
 
 
 func worker_frame() -> int:

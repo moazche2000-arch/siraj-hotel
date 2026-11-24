@@ -5,6 +5,7 @@ blender --background --factory-startup --python-exit-code 1 --python art/render_
 
 import math
 import random
+import sys
 import tempfile
 from array import array
 from pathlib import Path
@@ -201,13 +202,9 @@ def model_map():
         ]
     ]
     red = material("Burgundy wool", "783526")
-    green = material("Olive wool", "495742")
     thread = material("Rug trim", "CEA269")
     window = material("Green night glass", "334940", 0.42)
     fabric = material("Ivory cotton", "E7CB98")
-    pillow = material("Linen", "F5DFBD")
-    blanket = material("Patterned rust blanket", "9B6145")
-    glass = material("Amber lamp glass", "FFC874", 0.38, emission=0.18)
     leaves = material("Dusty olive leaves", "647047")
     deep_leaf = material("Leaf shadow", "414E35")
     rng = random.Random(1978)
@@ -253,32 +250,6 @@ def model_map():
             slab("Mashrabiya lattice", window_x + bar, window_y + 16, 1.5, 16, 0.12, 0.02, copper)
             lozenge(window_x + bar + 0.6, window_y + 24, 3.4, 4, 0.145, gold)
         slab("Window sill", window_x - 36, window_y + 34, 72, 4, 0.04, 0.12, wood, 0.015)
-        rug_x = x + (103 + (index % 3) * 5)
-        carpet(rug_x, y + (110 if index < 3 else 61), 93, 54, red if index % 2 == 0 else green, thread, gold)
-        # Bed coordinates match the station and collision rectangles in Godot.
-        bx, by = x + 27, y + (76 if index < 3 else 137)
-        slab("Walnut bed frame", bx, by, 88, 42, 0.02, 0.24, wood, 0.055)
-        slab("Padded mattress", bx + 4, by + 3, 80, 36, 0.26, 0.12, fabric, 0.06)
-        slab("Walnut headboard", bx - 3, by - 1, 6, 44, 0, 0.45, wood, 0.028)
-        slab("Pillow", bx + 8, by + 8, 22, 23, 0.38, 0.11, pillow, 0.075)
-        slab("Wool blanket", bx + 34, by + 4, 47, 34, 0.38, 0.065, blanket, 0.037)
-        for offset in (41, 51, 61, 71):
-            lozenge(bx + offset, by + 21, 3, 6, 0.448, fabric)
-        for px in (bx + 33, bx + 77):
-            slab("Blanket stitching", px, by + 6, 1, 29, 0.448, 0.002, gold)
-        cx, cy = x + 208, y + (84 if index < 3 else 146)
-        slab("Nightstand", cx, cy, 43, 23, 0, 0.40, wood, 0.045)
-        slab("Drawer pull", cx + 17, cy + 19, 9, 2, 0.40, 0.036, copper, 0.008)
-        slab("Bakélite radio", cx + 11, cy + 3, 23, 10, 0.40, 0.16, shadow, 0.021)
-        slab("Radio grille", cx + 13, cy + 5, 18, 6, 0.56, 0.012, copper)
-        for n in range(3):
-            slab("Radio grille engraving", cx + 14, cy + 6 + n * 2, 12, 0.6, 0.573, 0.007, edge)
-        for offset in (29, 244):
-            lx, ly = x + offset, y + (35 if index < 3 else 44)
-            slab("Brass lantern housing", lx - 6, ly - 6, 12, 12, 0.15, 0.30, copper, 0.03)
-            slab("Amber glass top", lx - 4, ly - 4, 8, 8, 0.45, 0.05, glass, 0.03)
-            light("Lantern pool", "POINT", map_point(lx, ly, 0.95), 15, (1, 0.66, 0.34), 0.21)
-        plant(x + 249, y + (145 if index < 3 else 106), clay, leaves, deep_leaf)
     slab("Reception counter", 402, 246, 112, 32, 0, 0.68, wood, 0.075)
     slab("Counter brass edging", 404, 248, 108, 28, 0.68, 0.042, copper, 0.03)
     slab("Counter walnut top", 407, 250, 102, 23, 0.722, 0.025, wood)
@@ -303,7 +274,7 @@ def plant(x, y, clay, leaves, shade):
         leaf.rotation_euler.z = -angle
 
 
-def worker(direction, phase, costume):
+def worker(direction, phase, costume, has_uniform=True):
     cap, shirt, apron, skin, hair, shoes, broom = costume
     angle = direction * math.pi / 2
     turn = mathutils_rotate(angle)
@@ -316,15 +287,19 @@ def worker(direction, phase, costume):
         stem("Shirt sleeve", turn(sign * 0.34, 0, 1.17), turn(sign * 0.47, -front * 0.5, 0.83), 0.105, shirt)
         ellipsoid("Hand", turn(sign * 0.47, -front * 0.5, 0.80), (0.10, 0.096, 0.11), skin)
     ellipsoid("Burgundy work jacket", turn(0, 0, 0.95), (0.35, 0.25, 0.42), shirt).rotation_euler.z = angle
-    cube("Cotton apron", turn(0, -0.24, 0.83), (0.45, 0.075, 0.48), apron, 0.025).rotation_euler.z = angle
+    if has_uniform:
+        cube("Cotton apron", turn(0, -0.24, 0.83), (0.45, 0.075, 0.48), apron, 0.025).rotation_euler.z = angle
+    else:
+        cube("Leather suitcase", turn(0.54, 0.0, 0.51), (0.25, 0.36, 0.40), shoes, 0.04).rotation_euler.z = angle
     ellipsoid("Head", turn(0, -0.04, 1.53), (0.27, 0.245, 0.30), skin).rotation_euler.z = angle
     ellipsoid("Hair", turn(0, 0.1, 1.57), (0.26, 0.16, 0.23), hair).rotation_euler.z = angle
     ellipsoid("Brim of hotel cap", turn(0, -0.12, 1.75), (0.32, 0.26, 0.06), cap).rotation_euler.z = angle
     ellipsoid("Hotel cap", turn(0, 0, 1.81), (0.29, 0.23, 0.11), cap).rotation_euler.z = angle
     for x in (-0.090, 0.090):
         ellipsoid("Eye", turn(x, -0.263, 1.56), (0.026, 0.03, 0.026), hair)
-    stem("Broom handle", turn(0.54, -0.10, 0.20), turn(0.48, -0.12, 1.42), 0.028, broom)
-    cube("Broom head", turn(0.56, -0.10, 0.16), (0.28, 0.13, 0.20), broom, 0.018).rotation_euler.z = angle
+    if has_uniform:
+        stem("Broom handle", turn(0.54, -0.10, 0.20), turn(0.48, -0.12, 1.42), 0.028, broom)
+        cube("Broom head", turn(0.56, -0.10, 0.16), (0.28, 0.13, 0.20), broom, 0.018).rotation_euler.z = angle
 
 
 def mathutils_rotate(angle):
@@ -357,15 +332,16 @@ def render(scene, path):
 
 def join_sprites(paths, result):
     width = SPRITE * 4
-    atlas = bpy.data.images.new("Worker animation atlas", width=width, height=SPRITE * 2, alpha=True)
-    pixels = array("f", [0]) * (width * SPRITE * 2 * 4)
+    rows = math.ceil(len(paths) / 4)
+    atlas = bpy.data.images.new(result.stem, width=width, height=SPRITE * rows, alpha=True)
+    pixels = array("f", [0]) * (width * SPRITE * rows * 4)
     for i, path in enumerate(paths):
         image = bpy.data.images.load(str(path), check_existing=False)
         sample = array("f", [0]) * (SPRITE * SPRITE * 4)
         image.pixels.foreach_get(sample)
         # Blender image rows start at the bottom, Godot's atlas rows at the top.
         x = (i % 4) * SPRITE
-        y = (1 - i // 4) * SPRITE
+        y = (rows - 1 - i // 4) * SPRITE
         for row in range(SPRITE):
             start = ((y + row) * width + x) * 4
             pixels[start:start + SPRITE * 4] = sample[row * SPRITE * 4:(row + 1) * SPRITE * 4]
@@ -375,6 +351,90 @@ def join_sprites(paths, result):
     atlas.file_format = "PNG"
     atlas.save()
     bpy.data.images.remove(atlas)
+
+
+def model_furniture(kind, luxury):
+    wood = material("Polished walnut" if luxury else "Varnished pine", "714230" if luxury else "956138")
+    textile = material("Wool upholstery", "375F4D" if luxury else "A65B43")
+    brass = material("Brass fittings", "DBA960", 0.42, 0.24)
+    cloth = material("Cotton", "EED8AB")
+    dark = material("Bakelite", "312623")
+
+    def piece(name, center, size, surface):
+        cube(name, center, size, surface, 0.035)
+
+    if kind == 0:
+        piece("Bed frame", (0, 0, 0.14), (1.82, 1.0, 0.24), wood)
+        piece("Mattress", (0, 0, 0.32), (1.74, 0.95, 0.19), cloth)
+        piece("Headboard", (-0.89, 0, 0.32), (0.11, 1.04, 0.6), wood)
+        piece("Blanket", (0.27, 0, 0.44), (1.1, 0.90, 0.07), textile)
+        piece("Pillow", (-0.58, 0, 0.46), (0.32, 0.68, 0.12), cloth)
+        for x in (-0.10, 0.48):
+            piece("Woven trim", (x, 0, 0.478), (0.035, 0.89, 0.006), brass)
+    elif kind == 1:
+        piece("Writing desk", (0, 0, 0.29), (1.66, 0.82, 0.52), wood)
+        piece("Writing blotter", (0.12, 0.02, 0.56), (0.69, 0.51, 0.03), textile)
+        piece("Notepad", (-0.52, 0.04, 0.565), (0.27, 0.34, 0.04), cloth)
+        piece("Drawer handle", (0, -0.425, 0.38), (0.18, 0.04, 0.055), brass)
+    elif kind == 2:
+        piece("Chair frame", (0, 0, 0.16), (1.03, 1.04, 0.3), wood)
+        piece("Seat", (0, -0.07, 0.34), (0.88, 0.84, 0.12), textile)
+        piece("Back rest", (0, 0.44, 0.54), (1.03, 0.20, 0.58), wood)
+        for x in (-0.49, 0.49):
+            piece("Arm rest", (x, -0.03, 0.49), (0.12, 0.78, 0.1), wood)
+    elif kind == 3:
+        piece("Rug fringe", (0, 0, 0.02), (1.98, 1.12, 0.035), cloth)
+        piece("Rug border", (0, 0, 0.05), (1.81, 1.1, 0.028), brass)
+        piece("Woven rug", (0, 0, 0.075), (1.65, 0.94, 0.03), textile)
+        for x in (-0.56, 0.0, 0.56):
+            cube("Rug lozenge", (x, 0, 0.095), (0.28, 0.28, 0.008), cloth, 0.007).rotation_euler.z = math.pi / 4
+    elif kind == 4:
+        ellipsoid("Lamp base", (0, 0, 0.09), (0.36, 0.36, 0.09), brass)
+        stem("Lamp stand", (0, 0, 0.1), (0, 0, 0.65), 0.055, brass)
+        ellipsoid("Amber lamp shade", (0, 0, 0.67), (0.49, 0.49, 0.19), cloth if luxury else brass)
+    elif kind == 5:
+        piece("Wardrobe", (0, 0, 0.46), (1.62, 0.79, 0.88), wood)
+        for x in (-0.38, 0.38):
+            piece("Walnut door panel", (x, -0.39, 0.54), (0.65, 0.065, 0.64), wood)
+            piece("Door pull", (x * 0.5, -0.442, 0.58), (0.085, 0.035, 0.20), brass)
+    else:
+        piece("Television cabinet", (0, 0, 0.26), (1.48, 0.89, 0.50), wood)
+        piece("Curved television glass", (-0.19, -0.38, 0.35), (0.9, 0.16, 0.32), textile if luxury else dark)
+        piece("Control panel", (0.51, -0.401, 0.34), (0.16, 0.065, 0.31), brass)
+        stem("Antenna left", (0.16, 0.04, 0.51), (-0.15, 0.32, 0.89), 0.012, brass)
+        stem("Antenna right", (0.16, 0.04, 0.51), (0.43, 0.35, 0.86), 0.012, brass)
+
+
+def make_management_art(temp):
+    furniture = []
+    for kind in range(7):
+        for quality in range(2):
+            scene = make_scene(f"Furniture {kind} — quality {quality}", SPRITE, SPRITE, True, 8)
+            model_furniture(kind, bool(quality))
+            camera((0, -1.7, 6.9), (0, 0, 0.25), 2.40)
+            light("Furniture key", "AREA", (-2, -2, 4), 250, (1.0, 0.82, 0.65), 3, (0, 0, 0))
+            light("Furniture fill", "AREA", (2, 1, 3), 90, (0.81, 0.87, 1), 2, (0, 0, 0))
+            target = temp / f"furniture-{kind}-{quality}.png"
+            render(scene, target)
+            furniture.append(target)
+    join_sprites(furniture, ASSETS / "furniture.png")
+
+    guests = []
+    for index, (coat, hat, skin) in enumerate([
+        ("536A70", "A67A4E", "D5A07A"), ("705163", "452C41", "A36A48"),
+        ("5C6543", "786348", "B68051"), ("965B43", "BD9A6E", "DCAB85"),
+    ]):
+        scene = make_scene(f"Guest {index}", SPRITE, SPRITE, True, 8)
+        colors = [hat, coat, "DEC697", skin, "392A25", "543925", "9A704C"]
+        costume = [material(f"Traveller {index} cloth {part}", hex_color) for part, hex_color in enumerate(colors)]
+        worker(0, 0, costume, has_uniform=False)
+        camera((0, -4, 7.15), (0, 0, 0.86), 2.48)
+        light("Guest key", "AREA", (-2, -3, 5), 330, (1.0, 0.81, 0.64), 3, (0, 0, 1))
+        light("Guest fill", "AREA", (2, 1, 3), 110, (0.70, 0.85, 1), 2, (0, 0, 1))
+        target = temp / f"guest-{index}.png"
+        render(scene, target)
+        guests.append(target)
+    join_sprites(guests, ASSETS / "guests.png")
 
 
 def make_cast(temp):
@@ -407,8 +467,13 @@ def main():
     bpy.context.preferences.filepaths.save_version = 0
     hotel = model_map()
     render(hotel, ASSETS / "hotel-floor.png")
+    management_only = "--management" in sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else False
     with tempfile.TemporaryDirectory() as temp:
-        make_cast(Path(temp))
+        make_management_art(Path(temp))
+        if not management_only:
+            make_cast(Path(temp))
+    if management_only:
+        return
     for scene in bpy.data.scenes:
         scene.render.filepath = "//"
     hotel.render.filepath = "//../assets/hotel-floor.png"
