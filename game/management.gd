@@ -5,6 +5,7 @@ const Saves = preload("res://game/save_state.gd")
 const Task = Rules.Task
 const Request = Rules.Request
 const Item = Rules.Item
+enum DirtCause { TIME, GUEST, CHECKOUT, HAUNT, LEAK }
 
 var rooms: Array[Dictionary] = []
 var waiting: Array[Dictionary] = []
@@ -23,8 +24,19 @@ var wage_day := 0
 var cleaner_in := Rules.CLEANER_INTERVAL
 var cleaner_room := -1
 var arrival_in := Rules.FIRST_ARRIVAL_SECONDS
-var maintenance_in := 46
+var maintenance_in := Rules.MAINTENANCE_FIRST_SECOND
 var haunt_in := Rules.HAUNT_FIRST_SECOND
+var service_clock := 0
+var room_cursor := 0
+var haunt_cursor := 0
+var haunt_sequence := 0
+var maintenance_sequence := 0
+var task_room := -1
+var task_kind := -1
+var task_slot := -1
+var task_reason := ""
+var task_expires := 0
+var task_wait := 0
 var next_guest_id := 1
 var map_revision := 0
 var notice := ""
@@ -39,6 +51,7 @@ func _init() -> void:
 			"open": index == 0, "clean": 100.0, "items": [0, 0, 0, 0, 0, 0], "broken": 0,
 			"guest": {}, "checkout": 0, "incident": -1, "incident_slot": -1,
 			"request": -1, "requested_item": -1, "deadline": 0, "request_in": 0,
+			"clean_until": 0, "haunt_at": 0, "offer_at": 0, "dirt_debt": 0.0, "dirt_cause": DirtCause.TIME,
 		})
 
 
@@ -92,6 +105,8 @@ func place_furniture(room: int, slot: int, item: int) -> bool:
 	map_revision += 1
 	record("وضعت %s في الغرفة %d." % [Rules.item_name(item), 101 + room])
 	check_request(room)
+	if task_room == room and task_slot == slot and task_kind in [Task.REPAIR, Task.BULB]:
+		clear_task()
 	return true
 
 
@@ -175,7 +190,7 @@ func accept_guest(id: int, room: int) -> bool:
 		waiting.remove_at(index)
 		rooms[room].guest = guest
 		rooms[room].checkout = day + guest.nights
-		rooms[room].request_in = rng.randi_range(Rules.REQUEST_INTERVAL.x, Rules.REQUEST_INTERVAL.y)
+		rooms[room].request_in = next_request_delay(room)
 		map_revision += 1
 		record("استقبلت %s في الغرفة %d." % [guest_name(guest), 101 + room])
 		return true
@@ -223,16 +238,17 @@ func set_employee(hire: bool) -> bool:
 	return true
 
 
-func tick() -> bool:
+func tick(player_room: int = -1) -> bool:
 	if not pending_report.is_empty():
 		return false
 	second += 1
+	service_clock += 1
 	for index in rooms.size():
 		if is_open(index):
 			update_room(index)
 	update_arrivals()
 	update_cleaner()
-	update_incidents()
+	update_jobs(player_room)
 	if second >= maxi(1, Rules.DAY_SECONDS):
 		close_day()
 		return true
@@ -242,27 +258,30 @@ func tick() -> bool:
 func update_room(index: int) -> void:
 	var room: Dictionary = rooms[index]
 	var is_empty: bool = room.guest.is_empty()
-	var decay := Rules.EMPTY_DIRT_PER_SECOND if is_empty else Rules.OCCUPIED_DIRT_PER_SECOND
-	if room.incident == Task.LEAK:
-		decay += Rules.LEAK_DIRT_PER_SECOND
 	var was_clean: bool = room.clean >= Rules.CLEANING_THRESHOLD
-	room.clean = maxf(0.0, room.clean - decay)
+	if not is_clean_protected(index):
+		var nights := 0 if is_empty else maxi(0, int(room.guest.nights) - remaining_nights(index))
+		var decay := Rules.EMPTY_DIRT_PER_SECOND if is_empty else Rules.OCCUPIED_DIRT_PER_SECOND + nights * Rules.STAY_DIRT_PER_DAY
+		var residue := minf(room.dirt_debt, Rules.EVENT_DIRT_PER_SECOND)
+		room.dirt_debt -= residue
+		decay += residue
+		if room.incident == Task.LEAK:
+			decay += Rules.LEAK_DIRT_PER_SECOND
+		if room.dirt_cause == DirtCause.TIME and not is_empty:
+			room.dirt_cause = DirtCause.GUEST
+		room.clean = maxf(0.0, room.clean - decay)
 	if was_clean and room.clean < Rules.CLEANING_THRESHOLD:
 		map_revision += 1
-	if is_empty:
-		return
-	if room.request >= 0:
-		room.deadline -= 1
-		if room.deadline <= 0:
-			room.guest.missed += 1
-			reputation = maxi(0, reputation - 1)
-			record("انتهت مهلة طلب الغرفة %d." % (101 + index))
-			reset_request(index)
-			map_revision += 1
-	else:
+	if not is_empty and room.request < 0 and room.request_in > 0:
 		room.request_in -= 1
-		if room.request_in <= 0:
-			create_request(index)
+
+
+func clean_seconds(index: int) -> int:
+	return maxi(0, int(rooms[index].clean_until) - service_clock) if is_open(index) else 0
+
+
+func is_clean_protected(index: int) -> bool:
+	return clean_seconds(index) > 0
 
 
 func update_arrivals() -> void:
@@ -308,8 +327,16 @@ func choose_guest_name() -> int:
 	return start
 
 
-func create_request(index: int) -> void:
+func next_request_delay(index: int) -> int:
+	var guest: Dictionary = rooms[index].guest
+	var width := maxi(1, Rules.REQUEST_INTERVAL.y - Rules.REQUEST_INTERVAL.x + 1)
+	return Rules.REQUEST_INTERVAL.x + (int(guest.get("id", 0)) * 7 + day + service_clock) % width
+
+
+func create_request(index: int) -> bool:
 	var room: Dictionary = rooms[index]
+	if room.guest.is_empty() or room.request_in > 0:
+		return false
 	var missing := Item.RUG
 	match int(room.guest.preference):
 		Rules.Preference.CLEAN:
@@ -318,14 +345,16 @@ func create_request(index: int) -> void:
 			missing = Item.TV
 	if first_broken(index) >= 0:
 		room.request = Request.REPAIR
-	elif first_item(index, missing, true) < 0 and rng.randi_range(0, 2) != 0:
+	elif first_item(index, missing, true) < 0:
 		room.request = Request.AMENITY
 		room.requested_item = missing
-	else:
+	elif room.clean < Rules.CLEANING_THRESHOLD and not is_clean_protected(index):
 		room.request = Request.CLEAN
+	else:
+		room.request_in = next_request_delay(index)
+		return false
 	room.deadline = Rules.REQUEST_DEADLINE
-	map_revision += 1
-	record("ضيف الغرفة %d طلب %s." % [101 + index, request_name(index)])
+	return offer_request(index)
 
 
 func request_name(index: int) -> String:
@@ -348,19 +377,19 @@ func reset_request(index: int) -> void:
 	room.request = -1
 	room.requested_item = -1
 	room.deadline = 0
-	room.request_in = rng.randi_range(Rules.REQUEST_INTERVAL.x, Rules.REQUEST_INTERVAL.y)
+	room.request_in = next_request_delay(index)
 
 
 func check_request(index: int) -> void:
 	var room: Dictionary = rooms[index]
-	if room.guest.is_empty() or room.deadline <= 0 or room.request < 0:
+	if task_room != index or room.guest.is_empty() or room.request < 0 or task_seconds_left() <= 0:
 		return
 	var fulfilled := false
 	match int(room.request):
 		Request.CLEAN:
 			fulfilled = room.clean >= 94.0
 		Request.REPAIR:
-			fulfilled = first_broken(index) < 0
+			fulfilled = not broken_at(index, task_slot)
 		Request.AMENITY:
 			fulfilled = first_item(index, room.requested_item, true) >= 0
 	if fulfilled:
@@ -369,7 +398,7 @@ func check_request(index: int) -> void:
 		room.guest.fulfilled += 1
 		reputation = mini(100, reputation + 1)
 		reset_request(index)
-		map_revision += 1
+		clear_task()
 		record("طلب الغرفة %d اكتمل. مكافأة %d ر.س." % [101 + index, reward])
 
 
@@ -391,74 +420,97 @@ func update_cleaner() -> void:
 	if selected >= 0:
 		rooms[selected].clean = minf(100.0, rooms[selected].clean + Rules.CLEANER_GAIN + (4.0 if upgrades[0] else 0.0))
 		check_request(selected)
+		if task_room == selected and task_kind == Task.CLEAN and rooms[selected].request < 0 and rooms[selected].clean >= Rules.CLEANING_THRESHOLD:
+			clear_task()
+			record("عامل التنظيف خلّص مهمة الغرفة %d." % (101 + selected))
 
 
-func update_incidents() -> void:
-	maintenance_in -= 1
-	if maintenance_in <= 0:
-		maintenance_in = rng.randi_range(Rules.MAINTENANCE_INTERVAL.x, Rules.MAINTENANCE_INTERVAL.y)
-		maintenance_event()
+func update_jobs(player_room: int) -> void:
+	maintenance_in = maxi(0, maintenance_in - 1)
 	if day >= Rules.HAUNT_FIRST_DAY:
-		haunt_in -= 1
-		if haunt_in <= 0:
-			var upper := maxi(Rules.HAUNT_MIN_INTERVAL + 6, Rules.HAUNT_START_INTERVAL - mini(day - Rules.HAUNT_FIRST_DAY, 12) * 3)
-			haunt_in = rng.randi_range(maxi(Rules.HAUNT_MIN_INTERVAL, upper - 11), upper)
-			haunt_event()
+		haunt_in = maxi(0, haunt_in - 1)
+	if task_room >= 0:
+		if task_expires > 0 and task_seconds_left() <= 0:
+			ignore_task(task_room, true)
+		return
+	if task_wait > 0:
+		task_wait -= 1
+		return
+	if offer_pending_room_work():
+		return
+	if haunt_in <= 0 and haunt_event(player_room):
+		return
+	if maintenance_in <= 0 and maintenance_event():
+		return
+	offer_room_need()
 
 
-func event_room() -> int:
-	var start := rng.randi_range(0, rooms.size() - 1)
+func event_room(start: int, excluded: int = -1, haunted: bool = false) -> int:
 	for offset in rooms.size():
 		var index := (start + offset) % rooms.size()
-		if is_open(index) and rooms[index].incident < 0:
-			return index
+		if index == excluded or not can_offer(index) or is_clean_protected(index):
+			continue
+		if rooms[index].incident >= 0 or rooms[index].request >= 0:
+			continue
+		if haunted and rooms[index].haunt_at > service_clock:
+			continue
+		return index
 	return -1
 
 
-func maintenance_event() -> void:
-	var index := event_room()
-	if index < 0:
-		return
+func maintenance_event() -> bool:
+	var index := event_room(room_cursor)
+	if task_room >= 0 or task_wait > 0 or index < 0:
+		return false
 	var room: Dictionary = rooms[index]
 	var lamp := first_item(index, Item.LAMP, true)
-	var choice := rng.randi_range(0, 2)
+	var choice := maintenance_sequence % 3
+	maintenance_sequence += 1
+	maintenance_in = maxi(1, Rules.MAINTENANCE_INTERVAL)
+	var reason := "ظهر تسريب ماء في الغرفة %d." % (101 + index)
 	if choice == 0 and lamp >= 0:
 		room.incident = Task.BULB
 		room.incident_slot = lamp
 		room.broken |= 1 << lamp
+		reason = "احترقت لمبة مركّبة في الغرفة %d." % (101 + index)
 	elif choice == 1 and not room.guest.is_empty():
 		room.incident = Task.KEY
+		reason = "ضيف الغرفة %d ضيّع مفتاحه." % (101 + index)
 	else:
 		room.incident = Task.LEAK
-		room.clean = maxf(0.0, room.clean - 13.0)
-	map_revision += 1
-	record("%s في الغرفة %d." % [Rules.TASK_NAMES[room.incident], 101 + index])
+		add_dirt(index, Rules.LEAK_EVENT_DIRT, DirtCause.LEAK)
+	return offer_task(index, room.incident, room.incident_slot, reason)
 
 
-func haunt_event() -> void:
-	if day < Rules.HAUNT_FIRST_DAY:
-		return
-	var index := event_room()
+func haunt_event(player_room: int = -1) -> bool:
+	if task_room >= 0 or task_wait > 0 or day < Rules.HAUNT_FIRST_DAY or haunt_in > 0:
+		return false
+	var index := event_room(haunt_cursor, player_room, true)
 	if index < 0:
-		return
+		return false
 	var room: Dictionary = rooms[index]
-	var choice := rng.randi_range(0, 3)
+	var choice := haunt_sequence % 3
+	haunt_sequence += 1
+	haunt_cursor = (index + 1) % rooms.size()
+	haunt_in = clampi(Rules.HAUNT_INTERVAL.y - (day - Rules.HAUNT_FIRST_DAY) * Rules.HAUNT_ACCELERATION_PER_DAY, Rules.HAUNT_INTERVAL.x, Rules.HAUNT_INTERVAL.y)
+	room.haunt_at = service_clock + Rules.HAUNT_ROOM_COOLDOWN
 	var slot := breakable_slot(index)
-	if not room.guest.is_empty() and choice <= 1:
+	add_dirt(index, Rules.HAUNT_DIRT, DirtCause.HAUNT)
+	if not room.guest.is_empty() and choice == 1:
 		room.incident = Task.CALM
 		room.guest.scares += 1
-		record("الجن خوّفوا ضيف الغرفة %d." % (101 + index), index)
-	elif choice < 3 and slot >= 0 and (not upgrades[1] or rng.randi_range(1, 100) <= Rules.LOCK_BREAK_RISK_PERCENT):
+		offer_task(index, Task.CALM, -1, "الجن خوّفوا ضيف الغرفة %d." % (101 + index), 0, index)
+	elif choice != 2 and slot >= 0 and (not upgrades[1] or rng.randi_range(1, 100) <= Rules.LOCK_BREAK_RISK_PERCENT):
 		room.broken |= 1 << slot
-		record("الجن كسروا قطعة أثاث في الغرفة %d." % (101 + index), index)
+		offer_task(index, Task.REPAIR, slot, "الجن كسروا قطعة أثاث في الغرفة %d." % (101 + index), 0, index)
 	else:
-		record("الجن وسّخوا الغرفة %d." % (101 + index), index)
-	room.clean = maxf(0.0, room.clean - Rules.HAUNT_DIRT)
-	map_revision += 1
+		task_wait = Rules.TASK_GAP
+		record("الجن مرّوا بالغرفة %d وتركوا أثرًا." % (101 + index), index)
+	return true
 
 
 func breakable_slot(room: int) -> int:
-	var start := rng.randi_range(0, Rules.SLOT_COUNT - 1)
+	var start := haunt_sequence % Rules.SLOT_COUNT
 	for offset in Rules.SLOT_COUNT:
 		var slot := (start + offset) % Rules.SLOT_COUNT
 		if slot_item(room, slot) > 0 and not broken_at(room, slot):
@@ -466,15 +518,130 @@ func breakable_slot(room: int) -> int:
 	return -1
 
 
+func add_dirt(index: int, amount: float, cause: int) -> void:
+	var room: Dictionary = rooms[index]
+	room.dirt_debt = minf(100.0, float(room.dirt_debt) + amount)
+	room.dirt_cause = cause
+
+
+func can_offer(index: int) -> bool:
+	return is_open(index) and rooms[index].offer_at <= service_clock
+
+
+func offer_pending_room_work() -> bool:
+	for offset in rooms.size():
+		var index := (room_cursor + offset) % rooms.size()
+		if not can_offer(index):
+			continue
+		var room: Dictionary = rooms[index]
+		if room.incident >= 0:
+			return offer_task(index, room.incident, room.incident_slot, "مشكلة %s قائمة في الغرفة %d." % [Rules.TASK_NAMES[room.incident], 101 + index])
+		if room.request >= 0 and not room.guest.is_empty() and offer_request(index):
+			return true
+	return false
+
+
+func offer_room_need() -> void:
+	for offset in rooms.size():
+		var index := (room_cursor + offset) % rooms.size()
+		if not can_offer(index):
+			continue
+		var room: Dictionary = rooms[index]
+		if create_request(index):
+			return
+		var broken := first_broken(index)
+		if broken >= 0:
+			offer_task(index, Task.REPAIR, broken, "الأثاث في الغرفة %d يحتاج إصلاحًا." % (101 + index))
+			return
+		if room.clean < Rules.CLEANING_THRESHOLD and not is_clean_protected(index):
+			offer_task(index, Task.CLEAN, -1, cleaning_reason(index))
+			return
+
+
+func cleaning_reason(index: int) -> String:
+	match int(rooms[index].dirt_cause):
+		DirtCause.GUEST:
+			return "إقامة الضيف في الغرفة %d خفّضت النظافة." % (101 + index)
+		DirtCause.CHECKOUT:
+			return "الضيف غادر الغرفة %d وتركها تحتاج تنظيف." % (101 + index)
+		DirtCause.HAUNT:
+			return "أثر الجن تراكم في الغرفة %d." % (101 + index)
+		DirtCause.LEAK:
+			return "الغرفة %d تحتاج تنظيفًا بعد التسريب." % (101 + index)
+	return "الغبار تراكم مع الوقت في الغرفة %d." % (101 + index)
+
+
+func offer_request(index: int) -> bool:
+	var room: Dictionary = rooms[index]
+	var reason := "ضيف الغرفة %d طلب %s." % [101 + index, request_name(index)]
+	var deadline := maxi(1, mini(int(room.deadline), Rules.REQUEST_DEADLINE))
+	match int(room.request):
+		Request.CLEAN:
+			if not is_clean_protected(index):
+				return offer_task(index, Task.CLEAN, -1, reason, deadline)
+		Request.REPAIR:
+			var slot := first_broken(index)
+			if slot >= 0:
+				return offer_task(index, Task.REPAIR, slot, reason, deadline)
+		Request.AMENITY:
+			if room.requested_item >= 0 and first_item(index, room.requested_item, true) < 0:
+				return offer_task(index, Task.AMENITY, -1, reason, deadline)
+	reset_request(index)
+	return false
+
+
+func offer_task(index: int, kind: int, slot: int, reason: String, deadline: int = 0, ghost: int = -1) -> bool:
+	if task_room >= 0 or task_wait > 0 or not is_open(index) or kind < 0 or kind >= Rules.TASK_NAMES.size():
+		return false
+	task_room = index
+	task_kind = kind
+	task_slot = slot
+	task_reason = reason
+	var seconds := deadline if deadline > 0 else Rules.TASK_IGNORE_SECONDS
+	task_expires = service_clock + seconds if seconds > 0 else 0
+	room_cursor = (index + 1) % rooms.size()
+	map_revision += 1
+	record(reason, ghost)
+	return true
+
+
+func task_seconds_left() -> int:
+	return maxi(0, task_expires - service_clock)
+
+
+func ignore_task(index: int, expired: bool = false) -> bool:
+	if task_room != index or not is_open(index):
+		return false
+	var room: Dictionary = rooms[index]
+	if room.request >= 0 and not room.guest.is_empty():
+		room.guest.missed += 1
+		reputation = maxi(0, reputation - 1)
+		reset_request(index)
+	room.offer_at = service_clock + Rules.IGNORED_ROOM_COOLDOWN
+	clear_task()
+	record("انتهت المهلة في الغرفة %d." % (101 + index) if expired else "تجاهلت مهمة الغرفة %d مؤقتًا." % (101 + index))
+	return true
+
+
+func clear_task() -> void:
+	task_room = -1
+	task_kind = -1
+	task_slot = -1
+	task_reason = ""
+	task_expires = 0
+	task_wait = Rules.TASK_GAP
+	map_revision += 1
+
+
 func can_do_task(index: int, task: int, slot: int = -1) -> bool:
-	if not is_open(index):
+	if not is_open(index) or task_room != index or (task_kind != task and not (task_kind == Task.CALM and task == Task.BANISH)):
 		return false
 	var room: Dictionary = rooms[index]
 	match task:
 		Task.CLEAN:
-			return room.clean < Rules.CLEANING_THRESHOLD or room.request == Request.CLEAN
+			return not is_clean_protected(index) and (room.clean < Rules.CLEANING_THRESHOLD or room.request == Request.CLEAN)
 		Task.REPAIR:
-			return broken_at(index, slot) and (room.incident != Task.BULB or room.incident_slot != slot)
+			return task_slot == slot and broken_at(index, slot) and (room.incident != Task.BULB or room.incident_slot != slot)
 		Task.BANISH:
 			return room.incident == Task.CALM
 		Task.LEAK, Task.BULB, Task.CALM, Task.KEY:
@@ -488,7 +655,10 @@ func complete_task(index: int, task: int, slot: int = -1) -> bool:
 	var room: Dictionary = rooms[index]
 	match task:
 		Task.CLEAN:
-			room.clean = minf(100.0, room.clean + Rules.CLEANING_GAIN + (14.0 if upgrades[0] else 0.0))
+			room.clean = 100.0
+			room.clean_until = service_clock + Rules.CLEAN_COOLDOWN
+			room.dirt_debt = 0.0
+			room.dirt_cause = DirtCause.TIME
 		Task.REPAIR:
 			room.broken &= ~(1 << slot)
 		Task.BULB:
@@ -501,7 +671,7 @@ func complete_task(index: int, task: int, slot: int = -1) -> bool:
 				room.guest.scares = maxi(0, int(room.guest.scares) - 1)
 			clear_incident(index)
 			if task == Task.BANISH:
-				haunt_in = maxi(haunt_in, Rules.HAUNT_MIN_INTERVAL * 2)
+				haunt_in = maxi(haunt_in, Rules.BANISH_DELAY)
 		Task.LEAK:
 			room.clean = minf(100.0, room.clean + 12.0)
 			clear_incident(index)
@@ -511,6 +681,8 @@ func complete_task(index: int, task: int, slot: int = -1) -> bool:
 	map_revision += 1
 	record("%s · اكتملت المهمة في %d." % [Rules.TASK_NAMES[task], 101 + index])
 	check_request(index)
+	if task_room == index:
+		clear_task()
 	return true
 
 
@@ -555,6 +727,26 @@ func checkout_guest(index: int) -> String:
 		guest.missed += 1
 	var rate := nightly_rate(index)
 	var payment := mini(rate, guest.budget) * int(guest.nights)
+	var stars := roundi(guest_score(index))
+	earn(payment)
+	reputation = clampi(reputation + (stars - 3) * 5, 0, 100)
+	last_review = "%s · %d/5 · دفع %d ر.س" % [guest_name(guest), stars, payment]
+	if task_room == index and (room.request >= 0 or room.incident in [Task.CALM, Task.KEY]):
+		clear_task()
+	room.guest = {}
+	room.checkout = 0
+	add_dirt(index, Rules.CHECKOUT_DIRT, DirtCause.CHECKOUT)
+	if room.incident == Task.CALM or room.incident == Task.KEY:
+		clear_incident(index)
+	reset_request(index)
+	return last_review
+
+
+func guest_score(index: int) -> float:
+	if not is_open(index) or rooms[index].guest.is_empty():
+		return 0.0
+	var room: Dictionary = rooms[index]
+	var guest: Dictionary = room.guest
 	var score: float = 1.25 + appeal(index) * 0.033
 	score += guest.fulfilled * 0.32 - guest.missed * 0.45 - guest.scares * 0.48
 	match int(guest.preference):
@@ -563,18 +755,8 @@ func checkout_guest(index: int) -> String:
 		Rules.Preference.COMFORT:
 			score += 0.55 if comfort(index) >= 22 else -0.45
 		Rules.Preference.BUDGET:
-			score += 0.45 if rate <= guest.budget * 0.85 else -0.32
-	var stars := clampi(roundi(score), 1, 5)
-	earn(payment)
-	reputation = clampi(reputation + (stars - 3) * 5, 0, 100)
-	last_review = "%s · %d/5 · دفع %d ر.س" % [guest_name(guest), stars, payment]
-	room.guest = {}
-	room.checkout = 0
-	room.clean = maxf(0.0, room.clean - 9.0)
-	if room.incident == Task.CALM or room.incident == Task.KEY:
-		clear_incident(index)
-	reset_request(index)
-	return last_review
+			score += 0.45 if nightly_rate(index) <= guest.budget * 0.85 else -0.32
+	return clampf(score, 1.0, 5.0)
 
 
 func spend(amount: int) -> void:
@@ -600,6 +782,10 @@ func snapshot() -> Dictionary:
 		"rooms": rooms, "waiting": waiting, "upgrades": upgrades, "next_guest": next_guest_id,
 		"employee": employee, "wage_day": wage_day, "cleaner_in": cleaner_in,
 		"arrival_in": arrival_in, "maintenance_in": maintenance_in, "haunt_in": haunt_in,
+		"service_clock": service_clock, "room_cursor": room_cursor, "haunt_cursor": haunt_cursor,
+		"haunt_sequence": haunt_sequence, "maintenance_sequence": maintenance_sequence,
+		"task_room": task_room, "task_kind": task_kind, "task_slot": task_slot,
+		"task_reason": task_reason, "task_expires": task_expires, "task_wait": task_wait,
 	}
 
 
@@ -608,11 +794,12 @@ func restore(data: Dictionary, version: int) -> void:
 	if saved_upgrades is Array:
 		for index in mini(upgrades.size(), saved_upgrades.size()):
 			upgrades[index] = saved_upgrades[index] is bool and saved_upgrades[index]
-	if version < Saves.VERSION:
+	if version < Saves.MANAGEMENT_VERSION:
 		cash = maxi(Rules.STARTING_CASH, Saves.integer(data.get("money"), Rules.STARTING_CASH))
 		return
 	day = maxi(1, Saves.integer(data.get("day"), 1))
 	second = clampi(Saves.integer(data.get("second"), 0), 0, maxi(0, Rules.DAY_SECONDS - 1))
+	service_clock = Saves.integer(data.get("service_clock"), mini((day - 1) * Rules.DAY_SECONDS + second, Saves.MAX_INTEGER))
 	cash = Saves.signed_integer(data.get("cash"), Rules.STARTING_CASH)
 	reputation = Saves.integer(data.get("reputation"), Rules.STARTING_REPUTATION, 100)
 	income = Saves.integer(data.get("income"), 0)
@@ -623,8 +810,15 @@ func restore(data: Dictionary, version: int) -> void:
 	wage_day = Saves.integer(data.get("wage_day"), 0, day)
 	cleaner_in = Saves.integer(data.get("cleaner_in"), Rules.CLEANER_INTERVAL, 300)
 	arrival_in = Saves.integer(data.get("arrival_in"), Rules.FIRST_ARRIVAL_SECONDS, 300)
-	maintenance_in = Saves.integer(data.get("maintenance_in"), 46, 300)
-	haunt_in = Saves.integer(data.get("haunt_in"), Rules.HAUNT_FIRST_SECOND, 300)
+	maintenance_in = Saves.integer(data.get("maintenance_in"), Rules.MAINTENANCE_FIRST_SECOND, 3600)
+	haunt_in = Saves.integer(data.get("haunt_in"), Rules.HAUNT_FIRST_SECOND, 3600)
+	if version < Saves.VERSION:
+		maintenance_in = maxi(maintenance_in, Rules.MAINTENANCE_FIRST_SECOND)
+		haunt_in = maxi(haunt_in, Rules.HAUNT_FIRST_SECOND)
+	room_cursor = Saves.integer(data.get("room_cursor"), 0, rooms.size() - 1)
+	haunt_cursor = Saves.integer(data.get("haunt_cursor"), 0, rooms.size() - 1)
+	haunt_sequence = Saves.integer(data.get("haunt_sequence"), 0)
+	maintenance_sequence = Saves.integer(data.get("maintenance_sequence"), 0)
 	next_guest_id = maxi(1, Saves.integer(data.get("next_guest"), 1))
 	var ids := {}
 	var saved_rooms: Variant = data.get("rooms")
@@ -649,6 +843,7 @@ func restore(data: Dictionary, version: int) -> void:
 			"reviews": reviews.left(650) if reviews is String else "",
 			"visitors": Saves.integer(report.get("visitors"), 0, Rules.ROOM_COUNT),
 		}
+	restore_task(data)
 
 
 func restore_room(index: int, saved: Dictionary, ids: Dictionary) -> void:
@@ -657,6 +852,11 @@ func restore_room(index: int, saved: Dictionary, ids: Dictionary) -> void:
 	if not room.open:
 		return
 	room.clean = Saves.number(saved.get("clean"), 100.0, 100.0)
+	room.clean_until = Saves.integer(saved.get("clean_until"), 0)
+	room.haunt_at = Saves.integer(saved.get("haunt_at"), 0)
+	room.offer_at = Saves.integer(saved.get("offer_at"), 0)
+	room.dirt_debt = Saves.number(saved.get("dirt_debt"), 0.0, 100.0)
+	room.dirt_cause = Saves.integer(saved.get("dirt_cause"), DirtCause.TIME, DirtCause.LEAK)
 	var items: Variant = saved.get("items")
 	var broken := Saves.integer(saved.get("broken"), 0, (1 << Rules.SLOT_COUNT) - 1)
 	if items is Array:
@@ -684,6 +884,24 @@ func restore_room(index: int, saved: Dictionary, ids: Dictionary) -> void:
 	if room.deadline <= 0 or (room.request == Request.AMENITY and room.requested_item < 0):
 		room.request = -1
 		room.deadline = 0
+
+
+func restore_task(data: Dictionary) -> void:
+	task_wait = Saves.integer(data.get("task_wait"), 0, Rules.TASK_GAP)
+	var index := Saves.integer(data.get("task_room"), -1, rooms.size() - 1)
+	var kind := Saves.integer(data.get("task_kind"), -1, Rules.TASK_NAMES.size() - 1)
+	if not is_open(index) or kind < 0:
+		return
+	task_room = index
+	task_kind = kind
+	task_slot = Saves.integer(data.get("task_slot"), -1, Rules.SLOT_COUNT - 1)
+	task_expires = Saves.integer(data.get("task_expires"), 0)
+	var reason: Variant = data.get("task_reason")
+	task_reason = reason.left(200) if reason is String and not reason.is_empty() else "الغرفة %d تحتاج %s." % [101 + index, Rules.TASK_NAMES[kind]]
+	if kind == Task.AMENITY and rooms[index].request == Request.AMENITY and not rooms[index].guest.is_empty():
+		return
+	if not can_do_task(index, kind, task_slot):
+		clear_task()
 
 
 func restore_guest(data: Dictionary, ids: Dictionary) -> Dictionary:

@@ -1,7 +1,8 @@
 extends RefCounted
 
 const PATH := "user://hotel-%d.json"
-const VERSION := 2
+const VERSION := 3
+const MANAGEMENT_VERSION := 2
 const ROOM_COUNT := 6
 const TASK_COUNT := 4
 const MAX_FILE_BYTES := 16 * 1024
@@ -58,7 +59,7 @@ static func read_slot(path: String) -> Dictionary:
 	if version < 0 or revision < 1:
 		push_warning("Save %s is missing a valid revision or format version." % path.get_file())
 		return {}
-	var complete := has_management_state(data) if version == VERSION else has_complete_state(data)
+	var complete := has_management_state(data) if version >= MANAGEMENT_VERSION else has_complete_state(data)
 	if not complete:
 		push_warning("Save %s has missing or invalid fields." % path.get_file())
 	return {"version": version, "revision": revision, "complete": complete, "data": data}

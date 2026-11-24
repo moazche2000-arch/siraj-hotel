@@ -22,6 +22,7 @@ const SPARKS_PER_EVENT := 9
 
 var world: Node2D
 var map_view: Control
+var map_fade: ColorRect
 var ui: Control
 var sound: Node
 var diagnostics: Logger
@@ -35,6 +36,7 @@ var paused := true:
 		if is_instance_valid(sound):
 			sound.set_ambience_paused(value)
 var muted := false
+var player_speed_index := 1
 var player := World.START
 var target := NO_TARGET
 var facing := 0
@@ -87,6 +89,11 @@ func _ready() -> void:
 	map_view.clip_contents = true
 	add_child(map_view)
 	map_view.add_child(world)
+	map_fade = ColorRect.new()
+	map_fade.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	map_view.add_child(map_fade)
+	map_fade.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	map_fade.hide()
 	sound = Sound.new()
 	add_child(sound)
 	sound.set_muted(muted)
@@ -134,7 +141,7 @@ func _process(delta: float) -> void:
 
 
 func advance_time() -> void:
-	var ended := business.tick()
+	var ended := business.tick(World.room_at(player))
 	unsaved_seconds += 1
 	sync_business()
 	if ended or unsaved_seconds >= Rules.AUTOSAVE_SECONDS:
@@ -322,12 +329,45 @@ func toggle_sound() -> void:
 	ui.refresh()
 
 
+func set_player_speed(index: int) -> bool:
+	if index < 0 or index >= Rules.SPEED_MULTIPLIERS.size():
+		return false
+	player_speed_index = index
+	cancel_input()
+	return save_game()
+
+
+func start_new_game() -> bool:
+	if not initialized or read_only_save or ui.modal_kind != "new_game":
+		return false
+	var previous := business
+	business = Management.new()
+	if not save_game():
+		business = previous
+		return false
+	player = World.START
+	target = NO_TARGET
+	facing = 0
+	notice = ""
+	seen_event = -1
+	painted_map = -1
+	haunt_flash = 0.0
+	ghost_time = 0.0
+	spark_count = 0
+	second_accumulator = 0.0
+	world.follow_player(0.0, true)
+	world.update_actors(true)
+	resume()
+	return true
+
+
 func move_worker(delta: float) -> void:
 	var horizontal := int(Input.is_physical_key_pressed(KEY_D) or Input.is_physical_key_pressed(KEY_RIGHT)) - int(Input.is_physical_key_pressed(KEY_A) or Input.is_physical_key_pressed(KEY_LEFT))
 	var vertical := int(Input.is_physical_key_pressed(KEY_S) or Input.is_physical_key_pressed(KEY_DOWN)) - int(Input.is_physical_key_pressed(KEY_W) or Input.is_physical_key_pressed(KEY_UP))
 	var direction := (Vector2(horizontal, vertical) + walk_intent).limit_length()
 	var old := player
-	apply_motion(direction * Rules.PLAYER_SPEED * clampf(delta, 0.0, MAX_STEP_DELTA))
+	var multiplier: float = Rules.SPEED_MULTIPLIERS[clampi(player_speed_index, 0, Rules.SPEED_MULTIPLIERS.size() - 1)]
+	apply_motion(direction * Rules.PLAYER_SPEED * multiplier * clampf(delta, 0.0, MAX_STEP_DELTA))
 	walking = player.distance_squared_to(old) > 0.01
 	if direction.length_squared() > 0.01:
 		if absf(direction.x) > absf(direction.y):
@@ -359,11 +399,10 @@ func update_target() -> void:
 	var room := World.room_at(player)
 	if business.is_open(room):
 		next = room
-	elif player.distance_squared_to(World.DESK + Vector2(0, 39)) < 52.0 * 52.0:
+	elif World.AT_RECEPTION.has_point(player) or World.RECEPTION_RECT.has_point(player):
 		next = RECEPTION
 	if target != next:
 		target = next
-		ui.refresh_action()
 
 
 func buy_room(room: int) -> bool:
@@ -399,6 +438,10 @@ func change_cleaner(hire: bool) -> bool:
 func start_task(room: int, kind: int, slot: int = -1) -> void:
 	if World.room_at(player) == room and business.can_do_task(room, kind, slot):
 		ui.show_chore(room, kind, slot)
+
+
+func ignore_task(room: int) -> bool:
+	return finish_business_action(business.ignore_task(room))
 
 
 func complete_task(room: int, kind: int, slot: int) -> void:
@@ -446,24 +489,26 @@ func update_sparks(delta: float) -> void:
 			spark_colors[index] = spark_colors[spark_count]
 
 
-func save_game() -> void:
+func save_game() -> bool:
 	if read_only_save:
-		return
+		return false
 	var payload := business.snapshot()
 	payload.version = Saves.VERSION
 	payload.revision = save_revision + 1
 	payload.muted = muted
+	payload.player_speed_index = player_speed_index
 	var next_slot := 1 - save_slot
 	var result := Saves.write_slot(next_slot, payload)
 	if result != OK:
 		push_warning("Hotel save failed: %s" % error_string(result))
 		notice = "تعذّر حفظ تقدّم الفندق."
-		return
+		return false
 	save_slot = next_slot
 	save_revision = payload.revision
 	has_save = true
 	needs_migration = false
 	unsaved_seconds = 0
+	return true
 
 
 func load_game() -> void:
@@ -474,6 +519,7 @@ func load_game() -> void:
 	var saved: Dictionary = entry.data
 	business.restore(saved, entry.version)
 	muted = saved.get("muted") is bool and saved.get("muted")
+	player_speed_index = Saves.integer(saved.get("player_speed_index"), 1, Rules.SPEED_MULTIPLIERS.size() - 1)
 	save_revision = entry.revision
 	save_slot = entry.slot
 	has_save = true

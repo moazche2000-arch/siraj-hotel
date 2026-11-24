@@ -3,7 +3,7 @@ extends Node
 signal downloading
 
 const Trust = preload("res://startup/trusted_key.gd")
-const BASE_REVISION := 7
+const BASE_REVISION := 8
 const PROTOCOL := 1
 const DIRECTORY := "user://siraj-content"
 const BOOT_META := "siraj_content_revision"
