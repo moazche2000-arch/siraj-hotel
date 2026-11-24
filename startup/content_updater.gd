@@ -3,7 +3,7 @@ extends Node
 signal downloading
 
 const Trust = preload("res://startup/trusted_key.gd")
-const BASE_REVISION := 5
+const BASE_REVISION := 6
 const PROTOCOL := 1
 const DIRECTORY := "user://siraj-content"
 const BOOT_META := "siraj_content_revision"
@@ -57,9 +57,10 @@ func fetch(url: String, seconds: float, limit: int, destination: String = "") ->
 func verify_manifest(raw: PackedByteArray) -> Dictionary:
 	if raw.is_empty() or raw.size() > MAX_MANIFEST_BYTES:
 		return {}
-	var envelope: Variant = JSON.parse_string(raw.get_string_from_utf8())
-	if not envelope is Dictionary:
+	var json := JSON.new()
+	if json.parse(raw.get_string_from_utf8()) != OK or not json.data is Dictionary:
 		return {}
+	var envelope: Dictionary = json.data
 	var payload: Variant = envelope.get("payload")
 	var signature: Variant = envelope.get("signature")
 	if not payload is String or not signature is String:
@@ -74,8 +75,10 @@ func verify_manifest(raw: PackedByteArray) -> Dictionary:
 	hashing.update(bytes)
 	if not Crypto.new().verify(HashingContext.HASH_SHA256, hashing.finish(), signed, key):
 		return {}
-	var fields: Variant = JSON.parse_string(bytes.get_string_from_utf8())
-	if not fields is Dictionary or fields.get("protocol") != PROTOCOL:
+	if json.parse(bytes.get_string_from_utf8()) != OK or not json.data is Dictionary:
+		return {}
+	var fields: Dictionary = json.data
+	if fields.get("protocol") != PROTOCOL:
 		return {}
 	var revision: Variant = fields.get("revision")
 	var pack_bytes: Variant = fields.get("pack_bytes")

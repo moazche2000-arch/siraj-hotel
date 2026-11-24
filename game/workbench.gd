@@ -10,6 +10,10 @@ const LINEN := Color("#e1c492")
 const CLEAN := Color("#a7c59b")
 const DARK := Color("#231a12")
 const REPAIR_CENTERS := [0.37, 0.66, 0.26]
+const REPAIR_RAIL := Rect2(92, 142, 420, 19)
+const LINEN_HINTS := ["ابدأ بإزالة الشراشف القديمة.", "الآن افرش الشراشف النظيفة.", "باقي ترتيب المخدة."]
+const NO_POINTER := -2
+const MOUSE_POINTER := -1
 
 var kind := 0
 var targets: Array[Vector2] = []
@@ -19,12 +23,18 @@ var steps := 0
 var goal := 3
 var missed := 0
 var brush_down := false
+var pointer := NO_POINTER
 var brush := Vector2.ZERO
 var clock := 0.0
 var done := false
+var repair_indicator: ColorRect
 
 
 func setup(task: Vector2i, shift: int, upgraded: bool) -> void:
+	if task.y < 0 or task.y > 3:
+		push_warning("The workbench received an invalid task: %s" % task)
+		done = true
+		return
 	kind = task.y
 	custom_minimum_size = FRAME
 	mouse_filter = Control.MOUSE_FILTER_STOP if kind <= 1 else Control.MOUSE_FILTER_IGNORE
@@ -44,40 +54,84 @@ func setup(task: Vector2i, shift: int, upgraded: bool) -> void:
 		goal = 3 if shift >= 4 else 2
 
 
+func _ready() -> void:
+	if kind == 3 and not done:
+		repair_indicator = ColorRect.new()
+		repair_indicator.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		repair_indicator.color = Color("#f4d49a")
+		repair_indicator.size = Vector2(6, 33)
+		add_child(repair_indicator)
+		update_repair_indicator()
+
+
 func _process(delta: float) -> void:
 	if kind == 3 and not done and is_visible_in_tree():
-		clock += delta
-		queue_redraw()
+		clock = fposmod(clock + minf(delta, 0.1), 2.3)
+		update_repair_indicator()
 
 
 func _notification(what: int) -> void:
-	if what in [NOTIFICATION_APPLICATION_FOCUS_OUT, NOTIFICATION_VISIBILITY_CHANGED]:
-		brush_down = false
+	match what:
+		NOTIFICATION_APPLICATION_FOCUS_OUT, NOTIFICATION_APPLICATION_PAUSED, NOTIFICATION_VISIBILITY_CHANGED:
+			cancel_stroke()
 
 
 func _gui_input(event: InputEvent) -> void:
 	if done or kind > 1:
 		return
-	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT:
-		brush_down = event.pressed
-		brush = event.position
+	if event is InputEventScreenTouch:
+		update_pointer(event.index, event.position, event.pressed and not event.canceled)
+		accept_event()
+	elif event is InputEventScreenDrag:
+		move_brush(event.index, event.position)
+		accept_event()
+	elif event.device == InputEvent.DEVICE_ID_EMULATION:
+		accept_event()
+	elif event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT:
+		update_pointer(MOUSE_POINTER, event.position, event.pressed)
+		accept_event()
+	elif event is InputEventMouseMotion and pointer == MOUSE_POINTER:
+		if event.button_mask & MOUSE_BUTTON_MASK_LEFT:
+			move_brush(MOUSE_POINTER, event.position)
+		else:
+			cancel_stroke()
+		accept_event()
+
+
+func update_pointer(index: int, point: Vector2, pressed: bool) -> void:
+	if not pressed:
+		if pointer == index:
+			cancel_stroke()
+	elif pointer == NO_POINTER and point.is_finite():
+		pointer = index
+		brush_down = true
+		brush = point
 		queue_redraw()
-		accept_event()
-	elif event is InputEventMouseMotion and brush_down:
-		if not event.button_mask & MOUSE_BUTTON_MASK_LEFT:
-			brush_down = false
-			return
-		stroke(brush, event.position)
-		brush = event.position
-		accept_event()
+
+
+func move_brush(index: int, point: Vector2) -> void:
+	if pointer != index:
+		return
+	if not point.is_finite():
+		cancel_stroke()
+		return
+	stroke(brush, point)
+	brush = point
+
+
+func cancel_stroke() -> void:
+	if brush_down:
+		pointer = NO_POINTER
+		brush_down = false
+		queue_redraw()
 
 
 func stroke(from: Vector2, to: Vector2) -> void:
 	var span := to - from
 	var distance := span.length()
-	if done or distance <= 0.01:
+	if done or not is_finite(distance) or distance <= 0.01 or workload <= 0.0:
 		return
-	var samples := maxi(1, ceili(distance / 8.0))
+	var samples := clampi(ceili(minf(distance, 1024.0) / 8.0), 1, 128)
 	var sample_distance := distance / samples
 	for mark in targets.size():
 		if remaining[mark] <= 0.0:
@@ -101,22 +155,22 @@ func stroke(from: Vector2, to: Vector2) -> void:
 
 
 func choose_linen(action: int) -> void:
-	if done:
+	if done or kind != 2 or steps < 0 or steps >= goal or steps >= LINEN_HINTS.size():
 		return
 	if action != steps:
-		var messages := ["ابدأ بإزالة الشراشف القديمة.", "الآن افرش الشراشف النظيفة.", "باقي ترتيب المخدة."]
-		changed.emit(float(steps) / goal, messages[steps])
+		changed.emit(float(steps) / goal, LINEN_HINTS[steps])
 		return
 	steps += 1
 	update_work(float(steps) / goal)
 
 
 func tighten() -> void:
-	if done:
+	if done or kind != 3 or steps < 0 or steps >= goal or steps >= REPAIR_CENTERS.size():
 		return
 	if absf(needle() - REPAIR_CENTERS[steps]) > tolerance():
 		missed += 1
 		changed.emit(float(steps) / goal, "اضغط لما يدخل المؤشر المنطقة النحاسية.")
+		queue_redraw()
 		return
 	steps += 1
 	clock = 0.0
@@ -128,6 +182,12 @@ func needle() -> float:
 	return 0.5 - cos(clock * TAU / 2.3) * 0.46
 
 
+func update_repair_indicator() -> void:
+	if is_instance_valid(repair_indicator):
+		repair_indicator.visible = not done
+		repair_indicator.position = REPAIR_RAIL.position + Vector2(REPAIR_RAIL.size.x * needle() - 3.0, -7)
+
+
 func tolerance() -> float:
 	return 0.145 + minf(0.10, missed * 0.025)
 
@@ -135,6 +195,7 @@ func tolerance() -> float:
 func update_work(progress: float) -> void:
 	queue_redraw()
 	done = steps >= goal
+	update_repair_indicator()
 	var caption := "%d من %d" % [steps, goal]
 	if done:
 		caption = "تمت المهمة"
@@ -212,11 +273,9 @@ func draw_repair() -> void:
 		draw_circle(center, 18, tint, true, -1, true)
 		draw_line(center - Vector2(9, 0), center + Vector2(9, 0), DARK, 3, true)
 		draw_line(center - Vector2(0, 9), center + Vector2(0, 9), DARK, 3, true)
-	if done:
+	if done or steps < 0 or steps >= REPAIR_CENTERS.size():
 		return
-	var rail := Rect2(92, 142, 420, 19)
+	var rail := REPAIR_RAIL
 	draw_rect(rail, DARK)
 	var zone_start: float = REPAIR_CENTERS[steps] - tolerance()
 	draw_rect(Rect2(rail.position + Vector2(rail.size.x * zone_start, 0), Vector2(rail.size.x * tolerance() * 2.0, rail.size.y)), BRASS)
-	var x := rail.position.x + rail.size.x * needle()
-	draw_rect(Rect2(x - 3.0, rail.position.y - 7, 6, 33), LINEN)

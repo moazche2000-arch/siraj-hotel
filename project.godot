@@ -2,7 +2,7 @@ config_version=5
 
 [application]
 config/name="فندق السراج"
-config/version="1.4.0"
+config/version="1.5.0"
 config/icon="res://assets/launcher.png"
 run/main_scene="res://startup/launcher.tscn"
 run/max_fps.android=30
