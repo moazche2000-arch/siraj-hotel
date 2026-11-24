@@ -4,6 +4,11 @@ const MAP_SIZE := Vector2(902, 566)
 const START := Vector2(458, 315)
 const DESK := Vector2(458, 264)
 const ROOM_NUMBERS := [101, 102, 103, 104, 105, 106]
+const ROOM_RECTS := [
+	Rect2(21, 23, 274, 190), Rect2(314, 23, 274, 190), Rect2(607, 23, 274, 190),
+	Rect2(21, 348, 274, 190), Rect2(314, 348, 274, 190), Rect2(607, 348, 274, 190),
+]
+const TASK_COUNT := 4
 const TASK_COLORS := [Color("#f4bd75"), Color("#92c2b0"), Color("#f9e0aa"), Color("#ed9d81")]
 const GOLD := Color("#e5b874")
 const READY := Color("#c6d49a")
@@ -13,41 +18,84 @@ const HOTEL = preload("res://assets/hotel-floor.png")
 const WORKER = preload("res://assets/worker.png")
 const JINN = preload("res://assets/jinn.png")
 const FRAME := Vector2(128, 128)
-const CAMERA_ZOOM := 1.32
+const CORRIDOR_ZOOM := 2.2
 const CAMERA_FOLLOW_SPEED := 7.0
+const ROOM_TRANSITION := 0.4
+const ROOM_MARGIN := 12.0
 
 var game: Node2D
 var view_size := Vector2.ZERO
 var actors := Node2D.new()
+var room_mask := Node2D.new()
 var last_actor_position := Vector2.INF
 var last_actor_frame := -1
+var focused_room := -1
+var transition_age := ROOM_TRANSITION
+var transition_origin := Vector2.ZERO
+var transition_zoom := CORRIDOR_ZOOM
 
 
 func _ready() -> void:
 	actors.draw.connect(draw_actors)
 	add_child(actors)
+	room_mask.draw.connect(draw_room_mask)
+	add_child(room_mask)
 
 
 func configure_camera(view: Vector2) -> void:
+	if not view.is_finite() or view.x <= 0.0 or view.y <= 0.0:
+		push_warning("Camera ignored an invalid viewport size.")
+		return
 	view_size = view
-	var fit := maxf(view.x / MAP_SIZE.x, view.y / MAP_SIZE.y)
-	scale = Vector2.ONE * fit * CAMERA_ZOOM
 	follow_player(0.0, true)
 
 
 func follow_player(delta: float, snap: bool = false) -> void:
-	var scaled_map := MAP_SIZE * scale
-	var desired: Vector2 = view_size * 0.5 - game.player * scale
-	desired = desired.clamp(view_size - scaled_map, Vector2.ZERO)
-	if position == desired:
+	if view_size == Vector2.ZERO or not is_instance_valid(game) or not game.player.is_finite():
 		return
-	if snap or position.distance_squared_to(desired) < 0.16:
-		position = desired
-	else:
-		position = position.lerp(desired, 1.0 - exp(-CAMERA_FOLLOW_SPEED * delta))
+	var room := room_at(game.player, game.active_rooms)
+	if focused_room != room:
+		focused_room = room
+		transition_age = 0.0
+		transition_origin = position
+		transition_zoom = scale.x
+		room_mask.queue_redraw()
+
+	var cover := maxf(view_size.x / MAP_SIZE.x, view_size.y / MAP_SIZE.y)
+	var goal_zoom := maxf(CORRIDOR_ZOOM, cover)
+	var center: Vector2 = game.player
+	if room >= 0:
+		var bounds: Rect2 = ROOM_RECTS[room]
+		var inset := view_size - Vector2.ONE * ROOM_MARGIN * 2.0
+		goal_zoom = maxf(cover, minf(inset.x / bounds.size.x, inset.y / bounds.size.y))
+		center = bounds.get_center()
+	var goal_position := clamp_camera(view_size * 0.5 - center * goal_zoom, goal_zoom)
+
+	var next_zoom := goal_zoom
+	var next_position := goal_position
+	if snap:
+		transition_age = ROOM_TRANSITION
+	elif transition_age < ROOM_TRANSITION:
+		transition_age = minf(transition_age + delta, ROOM_TRANSITION)
+		var weight := smoothstep(0.0, ROOM_TRANSITION, transition_age)
+		next_zoom = lerpf(transition_zoom, goal_zoom, weight)
+		next_position = transition_origin.lerp(goal_position, weight)
+	elif position.distance_squared_to(goal_position) >= 0.16:
+		next_position = position.lerp(goal_position, 1.0 - exp(-CAMERA_FOLLOW_SPEED * delta))
+	next_position = clamp_camera(next_position, next_zoom)
+	if scale.x != next_zoom:
+		scale = Vector2.ONE * next_zoom
+	if position != next_position:
+		position = next_position
+
+
+func clamp_camera(offset: Vector2, zoom: float) -> Vector2:
+	return offset.clamp((view_size - MAP_SIZE * zoom).min(Vector2.ZERO), Vector2.ZERO)
 
 
 func update_actors(effects_changed: bool) -> void:
+	if not is_instance_valid(game):
+		return
 	var frame := worker_frame()
 	if effects_changed or game.player != last_actor_position or frame != last_actor_frame:
 		last_actor_position = game.player
@@ -56,7 +104,14 @@ func update_actors(effects_changed: bool) -> void:
 
 
 static func room_rect(index: int) -> Rect2:
-	return Rect2(21 + (index % 3) * 293, 23 if index < 3 else 348, 274, 190)
+	return ROOM_RECTS[index] if index >= 0 and index < ROOM_RECTS.size() else Rect2()
+
+
+static func room_at(point: Vector2, active_rooms: int) -> int:
+	for index in clampi(active_rooms, 0, ROOM_RECTS.size()):
+		if ROOM_RECTS[index].has_point(point):
+			return index
+	return -1
 
 
 static func station(index: int, task: int) -> Vector2:
@@ -78,15 +133,35 @@ static func door(index: int) -> Vector2:
 	return Vector2(room.get_center().x, room.end.y if index < 3 else room.position.y)
 
 
+static func bed_rect(index: int) -> Rect2:
+	return Rect2(room_rect(index).position + Vector2(25, 78 if index < 3 else 139), Vector2(89, 41))
+
+
+static func cabinet_rect(index: int) -> Rect2:
+	return Rect2(room_rect(index).position + Vector2(208, 84 if index < 3 else 146), Vector2(43, 23))
+
+
+static func has_task_station(index: int, task: int) -> bool:
+	var room := room_rect(index)
+	if not room.has_area() or task < 0 or task >= TASK_COUNT:
+		return false
+	var point := station(index, task)
+	match task:
+		2:
+			return bed_rect(index).has_point(point + Vector2(0, 22))
+		3:
+			return cabinet_rect(index).has_point(point + Vector2(0, 23))
+		_:
+			return room.grow(-9).has_point(point) and not bed_rect(index).has_point(point) and not cabinet_rect(index).has_point(point)
+
+
 static func floor_contains(point: Vector2, active_rooms: int) -> bool:
 	if Rect2(24, 219, 846, 123).has_point(point):
 		return not Rect2(402, 244, 112, 36).has_point(point)
-	for index in active_rooms:
+	for index in clampi(active_rooms, 0, ROOM_RECTS.size()):
 		var room := room_rect(index)
 		if room.grow(-9).has_point(point):
-			var bed := Rect2(room.position + Vector2(25, 78 if index < 3 else 139), Vector2(89, 41))
-			var cabinet := Rect2(room.position + Vector2(208, 84 if index < 3 else 146), Vector2(43, 23))
-			return not (bed.has_point(point) or cabinet.has_point(point))
+			return not (bed_rect(index).has_point(point) or cabinet_rect(index).has_point(point))
 		if Rect2(door(index) - Vector2(28, 22), Vector2(56, 44)).has_point(point):
 			return true
 	return false
@@ -94,7 +169,9 @@ static func floor_contains(point: Vector2, active_rooms: int) -> bool:
 
 func _draw() -> void:
 	draw_texture_rect(HOTEL, Rect2(Vector2.ZERO, MAP_SIZE), false)
-	for index in 6:
+	if not is_instance_valid(game):
+		return
+	for index in ROOM_RECTS.size():
 		draw_room_state(index)
 	draw_plate(Vector2(416, 222), "الاستقبال", 84, GOLD)
 	if game.all_done():
@@ -102,21 +179,38 @@ func _draw() -> void:
 
 
 func draw_actors() -> void:
+	if not is_instance_valid(game):
+		return
 	if game.haunt_flash > 0.0:
 		var flash: float = game.haunt_flash
 		actors.draw_rect(Rect2(Vector2.ZERO, MAP_SIZE), Color(0.57, 0.28, 0.2, flash * 0.13))
 	if game.ghost_time > 0.0:
 		draw_ghost()
 	draw_worker()
-	for spark in game.sparks:
-		var tint: Color = spark.color
-		tint.a = minf(spark.life * 2.0, 1.0)
-		actors.draw_circle(spark.pos, 2, tint)
+	for index in game.spark_count:
+		var tint: Color = game.spark_colors[index]
+		tint.a = minf(game.spark_lifetimes[index] * 2.0, 1.0)
+		actors.draw_circle(game.spark_positions[index], 2, tint)
+
+
+func draw_room_mask() -> void:
+	if focused_room < 0:
+		for index in ROOM_RECTS.size():
+			var bounds: Rect2 = ROOM_RECTS[index]
+			room_mask.draw_rect(bounds, Color.BLACK)
+			var label_offset := Vector2(-12, -7 if index < 3 else 17)
+			room_mask.draw_string(FONT, door(index) + label_offset, str(ROOM_NUMBERS[index]), HORIZONTAL_ALIGNMENT_LEFT, -1, 13, GOLD)
+		return
+	var visible_room := room_rect(focused_room)
+	room_mask.draw_rect(Rect2(0, 0, MAP_SIZE.x, visible_room.position.y), Color.BLACK)
+	room_mask.draw_rect(Rect2(0, visible_room.end.y, MAP_SIZE.x, MAP_SIZE.y - visible_room.end.y), Color.BLACK)
+	room_mask.draw_rect(Rect2(0, visible_room.position.y, visible_room.position.x, visible_room.size.y), Color.BLACK)
+	room_mask.draw_rect(Rect2(visible_room.end.x, visible_room.position.y, MAP_SIZE.x - visible_room.end.x, visible_room.size.y), Color.BLACK)
 
 
 func draw_room_state(index: int) -> void:
 	var room := room_rect(index)
-	if index >= game.active_rooms:
+	if not game.is_room_open(index):
 		draw_rect(room.grow(-4), Color(0.085, 0.063, 0.043, 0.71))
 		var center := door(index)
 		var closed := Rect2(center - Vector2(28, 7), Vector2(56, 14))
@@ -132,8 +226,8 @@ func draw_room_state(index: int) -> void:
 		draw_circle(badge, 8, Color("#404b2b"))
 		draw_polyline(PackedVector2Array([badge + Vector2(-4, 0), badge + Vector2(-1, 3), badge + Vector2(4, -3)]), READY, 1.7)
 		return
-	for task in 4:
-		if game.rooms[index][task] > 0:
+	for task in TASK_COUNT:
+		if game.task_count(index, task) > 0:
 			draw_task(index, task)
 
 

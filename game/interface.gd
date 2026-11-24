@@ -42,8 +42,10 @@ var room_boxes: Array[Panel] = []
 var room_statuses: Array[Label] = []
 var room_dots: Array[Array] = []
 var modal: Control
+var modal_card: Panel
 var modal_kind := ""
 var chore_board: Control
+var diagnostics_return := "welcome"
 var aura: ColorRect
 
 
@@ -69,8 +71,14 @@ func _ready() -> void:
 	update_layout()
 
 
+func _exit_tree() -> void:
+	var window := get_window()
+	if is_instance_valid(window) and window.size_changed.is_connected(update_layout):
+		window.size_changed.disconnect(update_layout)
+
+
 func update_layout() -> void:
-	if layout_in_progress:
+	if layout_in_progress or not is_instance_valid(game) or not is_instance_valid(game.map_view):
 		return
 	var screen := get_window().size
 	if screen.x <= 0 or screen.y <= 0:
@@ -84,7 +92,7 @@ func update_layout() -> void:
 	var layout := landscape
 	if needs_rotation:
 		layout = Vector2i(600, clampi(roundi(600.0 * screen.y / screen.x), 840, 1600))
-	game.clear_gesture()
+	game.cancel_input()
 	size = Vector2(layout)
 	if get_window().content_scale_size != layout:
 		get_window().content_scale_size = layout
@@ -101,7 +109,7 @@ func update_layout() -> void:
 
 func build_hud(layout: Vector2) -> void:
 	if is_instance_valid(hud):
-		remove_child(hud)
+		hud.hide()
 		hud.queue_free()
 	hud = Control.new()
 	hud.layout_direction = Control.LAYOUT_DIRECTION_LTR
@@ -232,6 +240,8 @@ func blocks_gesture_at(point: Vector2) -> bool:
 
 
 func refresh() -> void:
+	if not is_instance_valid(task_line) or room_boxes.size() != World.ROOM_NUMBERS.size():
+		return
 	shift_label.text = "%02d  /  %s" % [game.shift, game.shift_name()]
 	shift_badge.text = "مالك الفندق" if game.is_owner() else "موظف خدمة الغرف"
 	balance_label.text = "الرصيد  %d ر.س" % game.money
@@ -246,32 +256,34 @@ func refresh() -> void:
 	progress.size.x = maxf(1, completion * progress_track.size.x)
 	progress.position.x = progress_track.end.x - progress.size.x
 	for index in 6:
-		var active: bool = index < game.active_rooms
+		var active: bool = game.is_room_open(index)
 		var ready: bool = active and game.room_done(index)
 		room_boxes[index].add_theme_stylebox_override("panel", box_style(Color("#343720") if ready else CARD if active else Color("#241c15"), Color("#656644") if ready else LINE))
 		room_statuses[index].text = "جاهزة" if ready else "تحتاج تنظيف" if active else "مغلقة"
 		room_statuses[index].modulate = TEAL if ready else Color.WHITE
 		for work in 4:
-			room_dots[index][work].visible = active and game.rooms[index][work] > 0
+			room_dots[index][work].visible = active and game.task_count(index, work) > 0
 	refresh_live()
 	update_flash()
 
 
 func refresh_live() -> void:
+	if not is_instance_valid(task_hint) or not is_instance_valid(job_button) or not is_instance_valid(event_text):
+		return
 	var target: Vector2i = game.target
 	var message := "اقترب من علامة المهمة، ثم المس الشاشة."
 	var button_text := "تفاعل"
 	if target == Vector2i(-2, -2):
 		message = "دفتر الوردية جاهز للتسليم."
 		button_text = "إنهاء الوردية"
-	elif target.x >= 0:
+	elif game.task_count(target.x, target.y) > 0:
 		message = "%s  /  غرفة %d" % [game.TASK_NAMES[target.y], World.ROOM_NUMBERS[target.x]]
 		button_text = game.TASK_NAMES[target.y]
 	elif game.all_done():
 		message = "كل الغرف جاهزة. ارجع إلى مكتب الاستقبال في وسط الممر."
 	set_text(task_hint, message)
 	set_text(job_button, button_text)
-	job_button.disabled = target.x == -1
+	job_button.disabled = target != Vector2i(-2, -2) and game.task_count(target.x, target.y) <= 0
 	var news := "الممر هادئ الآن." if game.shift > 1 else "ابدأ بالغرفتين 101 و102."
 	if game.notice_time > 0.0:
 		news = game.notice
@@ -279,6 +291,8 @@ func refresh_live() -> void:
 
 
 func update_flash() -> void:
+	if not is_instance_valid(aura) or not is_instance_valid(event_text):
+		return
 	aura.color = Color(0.83, 0.45, 0.27, game.haunt_flash * 0.8)
 	event_text.modulate = PINK if game.haunt_flash > 0.0 else Color.WHITE
 
@@ -303,9 +317,14 @@ func show_welcome() -> void:
 	var start := button(card, Rect2(179, 342, 324, 59), "تابع الوردية" if game.has_save else "ابدأ أول وردية", true)
 	start.pressed.connect(game.resume)
 	start.grab_focus()
+	var log_button := button(card, Rect2(244, 406, 194, 32), "سجل الأخطاء", false)
+	log_button.pressed.connect(show_diagnostics.bind("welcome"))
 
 
 func show_chore(work: Vector2i) -> void:
+	if game.task_count(work.x, work.y) <= 0 or not World.has_task_station(work.x, work.y):
+		push_warning("Ignored a request to open an unavailable chore: %s" % work)
+		return
 	var card := open_dialog("chore", Rect2(0, 0, 670, 454))
 	var headings := [
 		"مرّر المكنسة فوق أكوام الغبار.",
@@ -332,14 +351,15 @@ func show_chore(work: Vector2i) -> void:
 	fill.size = Vector2(0, 5)
 	var status := label(card, Rect2(33, 329, 604, 28), "0 من %d" % board.goal, 16, SUB)
 	board.changed.connect(func(progress: float, feedback: String):
-		status.text = feedback
-		fill.size.x = 604 * progress
-		fill.position.x = 604 - fill.size.x
+		if is_instance_valid(board) and chore_board == board and is_instance_valid(status) and is_instance_valid(fill):
+			status.text = feedback
+			fill.size.x = 604 * progress
+			fill.position.x = 604 - fill.size.x
 	)
 	board.completed.connect(func():
-		if modal_kind == "chore" and chore_board == board:
+		if modal_kind == "chore" and is_instance_valid(board) and chore_board == board:
 			game.complete_task(work)
-	)
+	, CONNECT_ONE_SHOT)
 	var back := button(card, Rect2(33, 377, 126, 50), "ارجع للغرفة", false)
 	back.pressed.connect(game.resume)
 	if work.y == 2:
@@ -353,15 +373,51 @@ func show_chore(work: Vector2i) -> void:
 		tighten.pressed.connect(board.tighten)
 
 
-func show_pause() -> void:
-	if game.paused:
+func show_pause(from_diagnostics: bool = false) -> void:
+	if game.paused and not from_diagnostics:
 		return
 	var card := open_dialog("pause", Rect2(411, 263, 458, 271))
 	label(card, Rect2(30, 22, 398, 68), "الوردية متوقفة", 35, INK, HORIZONTAL_ALIGNMENT_CENTER, true)
 	multiline(card, Rect2(37, 105, 384, 43), "تقدّمك ينحفظ عند كل مهمة تنهيها.", 15, SUB)
-	var resume_button := button(card, Rect2(94, 172, 270, 54), "تابع الوردية", true)
+	var resume_button := button(card, Rect2(194, 172, 228, 54), "تابع الوردية", true)
 	resume_button.pressed.connect(game.resume)
 	resume_button.grab_focus()
+	var log_button := button(card, Rect2(36, 172, 140, 54), "سجل الأخطاء", false)
+	log_button.pressed.connect(show_diagnostics.bind("pause"))
+
+
+func show_diagnostics(previous_dialog: String) -> void:
+	diagnostics_return = previous_dialog
+	var card := open_dialog("diagnostics", Rect2(0, 0, 780, 466))
+	label(card, Rect2(36, 22, 708, 52), "سجل الأخطاء", 31, INK, HORIZONTAL_ALIGNMENT_RIGHT, true)
+	var state := label(card, Rect2(36, 76, 708, 34), "آخر ٢٠ حدثًا محفوظة على هذا الجهاز.", 17, SUB)
+	var log_text: String = game.diagnostics.text() if is_instance_valid(game.diagnostics) else ""
+	var log_view := TextEdit.new()
+	log_view.editable = false
+	log_view.wrap_mode = TextEdit.LINE_WRAPPING_BOUNDARY
+	log_view.text_direction = Control.TEXT_DIRECTION_AUTO
+	log_view.text = log_text if not log_text.is_empty() else "ما فيه أخطاء مسجّلة."
+	log_view.add_theme_font_size_override("font_size", 17)
+	card.add_child(log_view)
+	log_view.position = Vector2(36, 114)
+	log_view.size = Vector2(708, 263)
+	var copy := button(card, Rect2(556, 397, 188, 48), "نسخ السجل", true)
+	copy.disabled = log_text.is_empty() or not DisplayServer.has_feature(DisplayServer.FEATURE_CLIPBOARD)
+	copy.pressed.connect(func():
+		DisplayServer.clipboard_set(log_text)
+		state.text = "تم نسخ السجل."
+	)
+	var back := button(card, Rect2(36, 397, 152, 48), "رجوع", false)
+	back.pressed.connect(close_diagnostics)
+
+
+func close_diagnostics() -> void:
+	if modal_kind != "diagnostics":
+		return
+	if diagnostics_return == "pause":
+		show_pause(true)
+	else:
+		show_welcome()
 
 
 func show_summary(finished: int, earned: int, proceeds: int, costs: int) -> void:
@@ -418,27 +474,26 @@ func open_dialog(kind: String, rect: Rect2) -> Panel:
 	modal = shade
 	shade.visible = not needs_rotation
 	var card := panel(shade, rect, Color("#2d2116"), Color("#8b6f4c"))
-	var accent := line(Rect2(0, 0, rect.size.x - 96, 2), GOLD)
-	hud.remove_child(accent)
-	card.add_child(accent)
-	accent.position = Vector2(48, 0)
+	modal_card = card
+	line(Rect2(48, 0, rect.size.x - 96, 2), GOLD, card)
 	position_dialog()
 	return card
 
 
 func position_dialog() -> void:
-	if not is_instance_valid(modal):
+	if not is_instance_valid(modal) or not is_instance_valid(modal_card):
 		return
 	modal.size = size
-	var card: Panel = modal.get_child(0)
-	card.position = (size - card.size) / 2.0
+	modal_card.position = (size - modal_card.size) / 2.0
 
 
 func close_dialog() -> void:
+	game.cancel_input()
 	if is_instance_valid(modal):
-		remove_child(modal)
+		modal.hide()
 		modal.queue_free()
 		modal = null
+	modal_card = null
 	chore_board = null
 	modal_kind = ""
 
@@ -507,12 +562,12 @@ func panel(parent: Control, rect: Rect2, fill: Color, border: Color = LINE) -> P
 	return item
 
 
-func line(rect: Rect2, color: Color) -> ColorRect:
+func line(rect: Rect2, color: Color, parent: Control = null) -> ColorRect:
 	var item := ColorRect.new()
 	item.layout_direction = Control.LAYOUT_DIRECTION_LTR
 	item.color = color
 	item.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	hud.add_child(item)
+	(hud if parent == null else parent).add_child(item)
 	item.size = rect.size
 	item.position = rect.position
 	return item

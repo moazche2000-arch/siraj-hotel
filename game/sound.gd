@@ -9,6 +9,7 @@ const CUES := {
 }
 
 var ambience: AudioStreamPlayer
+var cue_player: AudioStreamPlayer
 var muted := false
 var ambience_paused := true
 var backgrounded := false
@@ -21,6 +22,9 @@ func start_audio() -> void:
 	ambience.stream = NIGHT
 	ambience.volume_db = -20
 	add_child(ambience)
+	cue_player = AudioStreamPlayer.new()
+	cue_player.volume_db = -12
+	add_child(cue_player)
 	update_ambience()
 
 
@@ -54,18 +58,12 @@ func update_ambience() -> void:
 
 
 func stop_cues() -> void:
-	for child in get_children():
-		if child != ambience:
-			child.stop()
-			child.queue_free()
+	if is_instance_valid(cue_player):
+		cue_player.stop()
 
 
 func play_cue(name: String) -> void:
-	if muted or backgrounded or not is_instance_valid(ambience) or not CUES.has(name):
+	if muted or backgrounded or not is_instance_valid(cue_player) or not CUES.has(name):
 		return
-	var cue := AudioStreamPlayer.new()
-	cue.stream = CUES[name]
-	cue.volume_db = -12
-	add_child(cue)
-	cue.finished.connect(cue.queue_free)
-	cue.play()
+	cue_player.stream = CUES[name]
+	cue_player.play()
