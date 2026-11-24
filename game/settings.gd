@@ -1,5 +1,6 @@
 extends RefCounted
 
+const CONTENT_VERSION := "2.1.1"
 const PLAYER_SPEED := 82.5
 const SPEED_MULTIPLIERS := [0.82, 1.0, 1.18]
 const SPEED_LABELS := ["هادئة", "عادية", "أسرع"]
