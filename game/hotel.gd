@@ -14,7 +14,8 @@ const UPGRADE_COSTS := [140, 210, 300]
 const NO_POINTER := -2
 const MOUSE_POINTER := -1
 const DRAG_THRESHOLD := 8.0
-const DRAG_SCALE := 1.35
+const DRAG_SCALE := 0.46
+const WALK_SPEED := 96.0
 
 var world: Node2D
 var ui: Control
@@ -63,7 +64,6 @@ func _ready() -> void:
 		start_shift(1)
 	world = World.new()
 	world.game = self
-	world.position = Vector2(26, 142)
 	add_child(world)
 	sound = Sound.new()
 	add_child(sound)
@@ -76,6 +76,8 @@ func _ready() -> void:
 
 
 func _process(delta: float) -> void:
+	if ui.needs_rotation:
+		return
 	elapsed += delta
 	world.queue_redraw()
 	ui.animate(delta)
@@ -97,7 +99,7 @@ func _notification(what: int) -> void:
 
 
 func _unhandled_input(event: InputEvent) -> void:
-	if paused or pointer != NO_POINTER:
+	if paused or ui.needs_rotation or pointer != NO_POINTER:
 		return
 	if event is InputEventScreenTouch and event.pressed:
 		begin_gesture(event.index, event.position)
@@ -142,7 +144,7 @@ func drag_gesture(point: Vector2) -> void:
 	if motion.is_zero_approx():
 		return
 	var old := player
-	apply_motion(motion * DRAG_SCALE)
+	apply_motion(motion / world.scale * DRAG_SCALE)
 	if player.distance_squared_to(old) > 0.01:
 		last_drag = elapsed
 	if absf(motion.x) > 0.1:
@@ -163,7 +165,7 @@ func clear_gesture() -> void:
 
 
 func tap_interact() -> void:
-	if paused:
+	if paused or ui.needs_rotation:
 		return
 	target = find_target()
 	if target.x != -1:
@@ -171,7 +173,7 @@ func tap_interact() -> void:
 
 
 func _unhandled_key_input(event: InputEvent) -> void:
-	if not event is InputEventKey or not event.pressed or event.echo:
+	if ui.needs_rotation or not event is InputEventKey or not event.pressed or event.echo:
 		return
 	match event.physical_keycode:
 		KEY_ESCAPE:
@@ -246,7 +248,7 @@ func move_worker(delta: float) -> void:
 	var vertical := int(down(KEY_S) or down(KEY_DOWN)) - int(down(KEY_W) or down(KEY_UP))
 	var direction := Vector2(horizontal, vertical).limit_length()
 	var old := player
-	apply_motion(direction * 207.0 * delta)
+	apply_motion(direction * WALK_SPEED * delta)
 	walking = player.distance_squared_to(old) > 0.01 or (dragging and elapsed - last_drag < 0.1)
 	if absf(direction.x) > 0.1:
 		facing = 1 if direction.x > 0 else -1
