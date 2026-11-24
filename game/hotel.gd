@@ -108,7 +108,8 @@ func _ready() -> void:
 	if get_tree().has_meta(Updates.BOOT_META):
 		var revision: int = get_tree().get_meta(Updates.BOOT_META)
 		get_tree().remove_meta(Updates.BOOT_META)
-		get_tree().create_timer(1.0).timeout.connect(func(): Updates.confirm_startup(revision), CONNECT_ONE_SHOT)
+		var first_frame := get_tree().process_frame if DisplayServer.get_name() == "headless" else RenderingServer.frame_post_draw
+		first_frame.connect(Updates.confirm_startup.bind(revision), CONNECT_ONE_SHOT)
 
 
 func _process(delta: float) -> void:

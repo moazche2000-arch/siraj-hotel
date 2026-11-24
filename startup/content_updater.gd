@@ -3,7 +3,7 @@ extends Node
 signal downloading
 
 const Trust = preload("res://startup/trusted_key.gd")
-const BASE_REVISION := 8
+const BASE_REVISION := 9
 const PROTOCOL := 1
 const DIRECTORY := "user://siraj-content"
 const BOOT_META := "siraj_content_revision"
@@ -12,27 +12,38 @@ const MANIFEST_NAME := "siraj-update.json"
 const PACK_NAME := "siraj-game.pck"
 const MAX_MANIFEST_BYTES := 8192
 const MAX_PACK_BYTES := 48 * 1024 * 1024
+const MANIFEST_TIMEOUT := 7.0
+const PACK_TIMEOUT := 30.0
 
 var directory := DIRECTORY
 
 
 func refresh_cache() -> void:
 	if DirAccess.make_dir_recursive_absolute(directory) != OK:
+		push_warning("Android update could not open the content cache.")
 		return
 	recover_interrupted_boot()
 	var cached := best_cached()
 	var last_rejected := read_revision(directory.path_join("rejected"))
 	var current := maxi(maxi(BASE_REVISION, cached.get("revision", 0)), last_rejected)
-	var response := await fetch(RELEASES + "latest/download/" + MANIFEST_NAME, 2.5, MAX_MANIFEST_BYTES)
+	var response := await fetch(RELEASES + "latest/download/" + MANIFEST_NAME, MANIFEST_TIMEOUT, MAX_MANIFEST_BYTES)
+	if response.is_empty():
+		return
 	var release := verify_manifest(response)
-	if release.is_empty() or release.revision <= current:
+	if release.is_empty():
+		push_warning("Android update manifest could not be verified.")
+		return
+	if release.revision <= current:
 		return
 	downloading.emit()
 	var temporary := directory.path_join("download.pck")
 	DirAccess.remove_absolute(temporary)
-	var result := await fetch(RELEASES + "download/" + release.tag + "/" + PACK_NAME, 9.0, release.pack_bytes, temporary)
-	if not result.is_empty() and pack_matches(temporary, release):
-		install_pack(temporary, response, 1 - int(cached.get("slot", 1)))
+	var result := await fetch(RELEASES + "download/" + release.tag + "/" + PACK_NAME, PACK_TIMEOUT, release.pack_bytes, temporary)
+	if not result.is_empty():
+		if not pack_matches(temporary, release):
+			push_warning("Android update content did not match the signed manifest.")
+		elif not install_pack(temporary, response, 1 - int(cached.get("slot", 1))):
+			push_warning("Android update content could not be saved.")
 	DirAccess.remove_absolute(temporary)
 
 
@@ -46,10 +57,12 @@ func fetch(url: String, seconds: float, limit: int, destination: String = "") ->
 	var started := request.request(url, PackedStringArray(["Cache-Control: no-cache"]))
 	if started != OK:
 		request.queue_free()
+		push_warning("Android update request could not start: %s" % error_string(started))
 		return PackedByteArray()
 	var result: Array = await request.request_completed
 	request.queue_free()
 	if result[0] != HTTPRequest.RESULT_SUCCESS or result[1] != 200:
+		push_warning("Android update request failed (result %d, HTTP %d)." % [result[0], result[1]])
 		return PackedByteArray()
 	return result[3] if destination.is_empty() else PackedByteArray([1])
 

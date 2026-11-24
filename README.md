@@ -4,7 +4,7 @@
 
 ## اللعب
 
-- [العب من المتصفح](https://moazche2000-arch.github.io/siraj-hotel/) أو [حمّل أندرويد](https://github.com/moazche2000-arch/siraj-hotel/releases/download/v2.1.0/siraj-hotel-android.apk).
+- [العب من المتصفح](https://moazche2000-arch.github.io/siraj-hotel/) أو [حمّل أندرويد](https://github.com/moazche2000-arch/siraj-hotel/releases/download/v2.1.1/siraj-hotel-android.apk).
 - خلِّ الجوال بالعرض واسحب بإصبعك وثبّته للمشي. ارفعه للتوقف. اضغط ضغطة قصيرة قرب باب غرفة أو مكتب الاستقبال للتفاعل. ترى المنطقة التي تمشي فيها فقط، ويستغرق التلاشي عند دخول منطقة ثانية نحو ٠٫٣ ثانية.
 - الأيقونات الأربع تفتح الإعدادات والضيوف ودفتر الأعمال والمتجر. لإغلاق اللوحة اضغط الأيقونة نفسها أو علامة ✕ أو المس خارجها. تتوقف الحركة والساعة أثناء فتح لوحة.
 - افتح الغرفة ١٠١ من المتجر، اختر خانة فارغة، واشترِ سريرًا. كل غرفة لها ست خانات. كل نوع أثاث له سعر وقيمة راحة بدرجتين من الجودة.
@@ -44,11 +44,11 @@
 
 افتح `project.godot` في Godot واضغط **F5**. صُيّرت الخريطة الخالية من الأثاث وأطالس الأثاث والضيوف في Blender. لإعادة تصييرها شغّل `blender --background --factory-startup --python-exit-code 1 --python art/render_hotel.py -- --management`.
 
-أي دمج إلى `main` يشغّل تصدير الويب إلى GitHub Pages. نسخة أندرويد 1.3.0 والأحدث تبحث عن محتوى موقّع في GitHub Releases عند الفتح. للنشر صدّر `Android Content` ووقّع الحزمة من حساب Windows الذي يحتفظ بمفتاح توقيع المحتوى، ثم أرفق الحزمة وملف التوقيع بالإصدار الجديد. المراجعة ٨ مضمّنة في APK إصدار 2.1.0.
+أي دمج إلى `main` يشغّل تصدير الويب إلى GitHub Pages. نسخة أندرويد 1.3.0 والأحدث تبحث عن محتوى موقّع في GitHub Releases عند الفتح. رقم الإصدار داخل اللعبة يعرض المحتوى الفعلي وقد يختلف عن رقم التطبيق في إعدادات أندرويد. للنشر صدّر `Android Content` ووقّع الحزمة من حساب Windows الذي يحتفظ بمفتاح توقيع المحتوى، ثم أرفق الحزمة وملف التوقيع بالإصدار الجديد. المراجعة ٩ مضمّنة في APK إصدار 2.1.1.
 
 ```powershell
 godot --headless --path . --export-pack "Android Content" build/siraj-game.pck
-.\tools\Sign-ContentPack.ps1 -Revision 9 -Tag v2.1.1
+.\tools\Sign-ContentPack.ps1 -Revision 10 -Tag v2.1.2
 ```
 
 خط Noto Sans Arabic مرخّص بموجب SIL Open Font License، والنص الكامل موجود في `assets/OFL.txt`.

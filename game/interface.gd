@@ -263,6 +263,7 @@ func show_welcome() -> void:
 	start.pressed.connect(game.resume)
 	start.grab_focus()
 	button(card, Rect2(249, 356, 182, 40), "سجل الأخطاء", false).pressed.connect(show_diagnostics.bind("welcome"))
+	label(card, Rect2(35, 398, 610, 30), "إصدار اللعبة %s" % Rules.CONTENT_VERSION, 14, Sub, HORIZONTAL_ALIGNMENT_CENTER)
 
 
 func show_ledger() -> void:
@@ -615,6 +616,7 @@ func show_pause(from_diagnostics: bool = false) -> void:
 		state.text = "تم الحفظ." if game.save_game() else "تعذّر الحفظ."
 	)
 	button(card, Rect2(439, 248, 194, 46), "لعبة جديدة", false).pressed.connect(show_new_game)
+	label(card, Rect2(32, 363, 173, 32), "إصدار اللعبة %s" % Rules.CONTENT_VERSION, 14, Sub, HORIZONTAL_ALIGNMENT_LEFT)
 	button(card, Rect2(221, 355, 222, 46), "تابع إدارة الفندق", true).pressed.connect(game.resume)
 
 
