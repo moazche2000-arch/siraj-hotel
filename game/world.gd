@@ -13,8 +13,46 @@ const HOTEL = preload("res://assets/hotel-floor.png")
 const WORKER = preload("res://assets/worker.png")
 const JINN = preload("res://assets/jinn.png")
 const FRAME := Vector2(128, 128)
+const CAMERA_ZOOM := 1.32
+const CAMERA_FOLLOW_SPEED := 7.0
 
 var game: Node2D
+var view_size := Vector2.ZERO
+var actors := Node2D.new()
+var last_actor_position := Vector2.INF
+var last_actor_frame := -1
+
+
+func _ready() -> void:
+	actors.draw.connect(draw_actors)
+	add_child(actors)
+
+
+func configure_camera(view: Vector2) -> void:
+	view_size = view
+	var fit := maxf(view.x / MAP_SIZE.x, view.y / MAP_SIZE.y)
+	scale = Vector2.ONE * fit * CAMERA_ZOOM
+	follow_player(0.0, true)
+
+
+func follow_player(delta: float, snap: bool = false) -> void:
+	var scaled_map := MAP_SIZE * scale
+	var desired: Vector2 = view_size * 0.5 - game.player * scale
+	desired = desired.clamp(view_size - scaled_map, Vector2.ZERO)
+	if position == desired:
+		return
+	if snap or position.distance_squared_to(desired) < 0.16:
+		position = desired
+	else:
+		position = position.lerp(desired, 1.0 - exp(-CAMERA_FOLLOW_SPEED * delta))
+
+
+func update_actors(effects_changed: bool) -> void:
+	var frame := worker_frame()
+	if effects_changed or game.player != last_actor_position or frame != last_actor_frame:
+		last_actor_position = game.player
+		last_actor_frame = frame
+		actors.queue_redraw()
 
 
 static func room_rect(index: int) -> Rect2:
@@ -60,18 +98,20 @@ func _draw() -> void:
 		draw_room_state(index)
 	draw_plate(Vector2(416, 222), "الاستقبال", 84, GOLD)
 	if game.all_done():
-		draw_circle(DESK + Vector2(0, 34), 10 + sin(game.elapsed * 5.0) * 3.0, READY, false, 2)
+		draw_circle(DESK + Vector2(0, 34), 13, READY, false, 2)
+
+
+func draw_actors() -> void:
 	if game.haunt_flash > 0.0:
 		var flash: float = game.haunt_flash
-		draw_rect(Rect2(Vector2.ZERO, MAP_SIZE), Color(0.57, 0.28, 0.2, flash * 0.13))
-		draw_rect(Rect2(Vector2(3, 3), MAP_SIZE - Vector2(6, 6)), Color(0.94, 0.55, 0.35, flash * 0.7), false, 3)
+		actors.draw_rect(Rect2(Vector2.ZERO, MAP_SIZE), Color(0.57, 0.28, 0.2, flash * 0.13))
 	if game.ghost_time > 0.0:
 		draw_ghost()
 	draw_worker()
 	for spark in game.sparks:
 		var tint: Color = spark.color
 		tint.a = minf(spark.life * 2.0, 1.0)
-		draw_circle(spark.pos, 2, tint)
+		actors.draw_circle(spark.pos, 2, tint)
 
 
 func draw_room_state(index: int) -> void:
@@ -116,9 +156,9 @@ func draw_task(index: int, task: int) -> void:
 		3:
 			var cabinet := pos + Vector2(0, 23)
 			draw_polyline(PackedVector2Array([cabinet + Vector2(4, -9), cabinet + Vector2(-3, -3), cabinet + Vector2(5, 4), cabinet + Vector2(-2, 11)]), color, 2)
-	var ping := pos + Vector2(0, -12 + sin(game.elapsed * 3.7 + index) * 2)
+	var ping := pos + Vector2(0, -12)
 	var selected: bool = game.target.x == index and game.target.y == task
-	draw_set_transform(ping, 0, Vector2(scale.y / scale.x, 1))
+	draw_set_transform(ping)
 	draw_circle(Vector2.ZERO, 14 if selected else 11, SHADOW)
 	draw_circle(Vector2.ZERO, 13 if selected else 10, color, false, 1.5)
 	draw_task_symbol(task, color)
@@ -140,24 +180,29 @@ func draw_task_symbol(task: int, color: Color) -> void:
 			draw_line(Vector2(0, -5), Vector2(6, 0), color, 3)
 
 
+func worker_frame() -> int:
+	var phase := int(game.elapsed * 8.0) % 2 if game.walking else 0
+	return phase * 4 + game.facing
+
+
 func draw_worker() -> void:
 	var pos: Vector2 = game.player
-	var phase := int(game.elapsed * 8.0) % 2 if game.walking else 0
-	var region := Rect2(Vector2(game.facing, phase) * FRAME, FRAME)
-	draw_set_transform(pos, 0, Vector2(scale.y / scale.x, 0.52))
-	draw_circle(Vector2(0, 3), 13, Color(0.10, 0.07, 0.05, 0.52))
-	draw_set_transform(pos, 0, Vector2(scale.y / scale.x, 1))
-	draw_texture_rect_region(WORKER, Rect2(-31, -44, 62, 62), region)
-	draw_set_transform(Vector2.ZERO)
+	var frame := worker_frame()
+	var region := Rect2(Vector2(frame % 4, frame >> 2) * FRAME, FRAME)
+	actors.draw_set_transform(pos, 0, Vector2(1, 0.52))
+	actors.draw_circle(Vector2(0, 3), 13, Color(0.10, 0.07, 0.05, 0.52))
+	actors.draw_set_transform(pos)
+	actors.draw_texture_rect_region(WORKER, Rect2(-31, -44, 62, 62), region)
+	actors.draw_set_transform(Vector2.ZERO)
 
 
 func draw_ghost() -> void:
 	var pos: Vector2 = game.ghost_position + Vector2(sin(game.elapsed * 5.0) * 9, sin(game.elapsed * 6.0) * 7)
 	var opacity: float = clampf(game.ghost_time, 0.0, 1.0)
-	draw_set_transform(pos, 0, Vector2(scale.y / scale.x, 1))
-	draw_circle(Vector2.ZERO, 28, Color(0.68, 0.71, 0.52, opacity * 0.17))
-	draw_texture_rect(JINN, Rect2(-44, -61, 88, 88), false, Color(1, 1, 0.91, opacity * 0.89))
-	draw_set_transform(Vector2.ZERO)
+	actors.draw_set_transform(pos)
+	actors.draw_circle(Vector2.ZERO, 28, Color(0.68, 0.71, 0.52, opacity * 0.17))
+	actors.draw_texture_rect(JINN, Rect2(-44, -61, 88, 88), false, Color(1, 1, 0.91, opacity * 0.89))
+	actors.draw_set_transform(Vector2.ZERO)
 
 
 func draw_plate(pos: Vector2, value: String, width: float, color: Color) -> void:

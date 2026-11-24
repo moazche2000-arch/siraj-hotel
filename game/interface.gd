@@ -91,7 +91,7 @@ func update_layout() -> void:
 	if not is_instance_valid(hud) or (not needs_rotation and hud.size != size):
 		build_hud(Vector2(1280, 720) if needs_rotation else size)
 	hud.visible = not needs_rotation
-	game.world.visible = not needs_rotation
+	game.map_view.visible = not needs_rotation
 	if is_instance_valid(modal):
 		modal.visible = not needs_rotation
 		position_dialog()
@@ -122,8 +122,9 @@ func build_hud(layout: Vector2) -> void:
 func build_landscape(width: float) -> void:
 	var diary_x := width - DIARY_WIDTH - 10.0
 	var map_size := Vector2(diary_x - MAP_ORIGIN.x - 8.0, MAP_HEIGHT)
-	game.world.position = MAP_ORIGIN
-	game.world.scale = map_size / World.MAP_SIZE
+	game.map_view.position = MAP_ORIGIN
+	game.map_view.size = map_size
+	game.world.configure_camera(map_size)
 	line(Rect2(10, 44, width - 20, 1), LINE)
 	label(hud, Rect2(14, 4, 170, 34), "١٩٧٨  ·  الطابق الأرضي", 15, GOLD, HORIZONTAL_ALIGNMENT_LEFT)
 	label(hud, Rect2(diary_x - 280, 2, 272, 40), "فندق السِّراج", 30, INK, HORIZONTAL_ALIGNMENT_RIGHT, true)
@@ -253,6 +254,7 @@ func refresh() -> void:
 		for work in 4:
 			room_dots[index][work].visible = active and game.rooms[index][work] > 0
 	refresh_live()
+	update_flash()
 
 
 func refresh_live() -> void:
@@ -274,11 +276,11 @@ func refresh_live() -> void:
 	if game.notice_time > 0.0:
 		news = game.notice
 	set_text(event_text, news)
-	event_text.modulate = PINK if game.haunt_flash > 0.0 else Color.WHITE
 
 
-func animate(_delta: float) -> void:
+func update_flash() -> void:
 	aura.color = Color(0.83, 0.45, 0.27, game.haunt_flash * 0.8)
+	event_text.modulate = PINK if game.haunt_flash > 0.0 else Color.WHITE
 
 
 func set_text(control: Control, value: String) -> void:
