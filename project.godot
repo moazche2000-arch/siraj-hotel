@@ -10,15 +10,15 @@ config/custom_user_dir_name="SirajHotel"
 
 [display]
 window/size/viewport_width=1280
-window/size/viewport_height=800
+window/size/viewport_height=720
 window/size/window_width_override=1152
-window/size/window_height_override=720
+window/size/window_height_override=648
 window/stretch/mode="canvas_items"
-window/handheld/orientation=6
+window/handheld/orientation=4
 
 [rendering]
 renderer/rendering_method="gl_compatibility"
 renderer/rendering_method.mobile="gl_compatibility"
 textures/default_filters/use_nearest_mipmap_filter=false
 textures/vram_compression/import_etc2_astc=true
-environment/defaults/default_clear_color=Color(0.043, 0.061, 0.079, 1)
+environment/defaults/default_clear_color=Color(0.09, 0.071, 0.055, 1)
