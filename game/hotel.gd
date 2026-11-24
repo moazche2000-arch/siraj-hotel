@@ -3,6 +3,7 @@ extends Node2D
 const World = preload("res://game/world.gd")
 const Interface = preload("res://game/interface.gd")
 const Sound = preload("res://game/sound.gd")
+const Updates = preload("res://startup/content_updater.gd")
 const ACTIVE_COUNTS := [2, 3, 4, 5, 6]
 const SHIFT_NAMES := ["أول وردية", "أصوات بالممر", "آخر ليلة للمدير", "المفتاح صار لك", "الجناح السادس"]
 const TASK_NAMES := ["كنس الأرض", "مسح الأرض", "تغيير الشراشف", "إصلاح الأثاث"]
@@ -65,8 +66,13 @@ func _ready() -> void:
 	ui = Interface.new()
 	ui.game = self
 	add_child(ui)
-	ui.refresh()
 	ui.show_welcome()
+	if get_tree().has_meta(Updates.BOOT_META):
+		var revision: int = get_tree().get_meta(Updates.BOOT_META)
+		get_tree().remove_meta(Updates.BOOT_META)
+		get_tree().create_timer(1.0).timeout.connect(
+			func(): Updates.confirm_startup(revision), CONNECT_ONE_SHOT
+		)
 
 
 func _process(delta: float) -> void:
@@ -216,6 +222,7 @@ func resume() -> void:
 	paused = false
 	reset_interaction()
 	ui.close_dialog()
+	sound.start_audio()
 	if not has_save:
 		save_game()
 	ui.refresh()
@@ -446,17 +453,10 @@ func load_game() -> void:
 		if file == null:
 			continue
 		var data: Variant = JSON.parse_string(file.get_as_text())
-		if not data is Dictionary or int(data.get("revision", 0)) <= int(latest.get("revision", 0)):
+		if not data is Dictionary or not valid_save(data):
 			continue
-		var saved_rooms: Variant = data.get("rooms")
-		var saved_upgrades: Variant = data.get("upgrades")
-		if not saved_rooms is Array or saved_rooms.size() != 6:
-			continue
-		if saved_rooms.any(func(room): return not room is Array or room.size() != 4):
-			continue
-		if not saved_upgrades is Array or saved_upgrades.size() != 3:
-			continue
-		latest = data
+		if data.revision > latest.get("revision", 0):
+			latest = data
 	if latest.is_empty():
 		return
 	start_shift(maxi(1, int(latest.shift)))
@@ -472,3 +472,22 @@ func load_game() -> void:
 	muted = bool(latest.muted)
 	save_revision = int(latest.revision)
 	has_save = true
+
+
+func valid_save(data: Dictionary) -> bool:
+	for field in ["revision", "shift", "money", "profit", "haunt_count", "task_total"]:
+		if not is_save_number(data.get(field)):
+			return false
+	var saved_rooms: Variant = data.get("rooms")
+	if not saved_rooms is Array or saved_rooms.size() != 6:
+		return false
+	for room: Variant in saved_rooms:
+		if not room is Array or room.size() != 4 or not room.all(is_save_number):
+			return false
+	var saved_upgrades: Variant = data.get("upgrades")
+	return saved_upgrades is Array and saved_upgrades.size() == 3 \
+		and saved_upgrades.all(func(value): return value is bool) and data.get("muted") is bool
+
+
+func is_save_number(value: Variant) -> bool:
+	return (value is float or value is int) and absf(value) <= 2147483647 and int(value) == value

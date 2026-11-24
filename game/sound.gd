@@ -13,8 +13,8 @@ var ambience: AudioStreamPlayer
 var muted := false
 
 
-func _ready() -> void:
-	if DisplayServer.get_name() == "headless":
+func start_audio() -> void:
+	if is_instance_valid(ambience) or DisplayServer.get_name() == "headless":
 		return
 	for name in SCORES:
 		cues[name] = synthesize(SCORES[name], name == "haunt")
@@ -23,6 +23,7 @@ func _ready() -> void:
 	ambience.volume_db = -20
 	add_child(ambience)
 	ambience.play()
+	ambience.stream_paused = muted
 
 
 func _exit_tree() -> void:
