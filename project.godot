@@ -2,6 +2,7 @@ config_version=5
 
 [application]
 config/name="فندق السراج"
+config/version="1.2.0"
 config/icon="res://assets/launcher.png"
 run/main_scene="res://game/hotel.tscn"
 config/features=PackedStringArray("4.7", "GL Compatibility")

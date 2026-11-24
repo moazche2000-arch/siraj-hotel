@@ -2,6 +2,7 @@ extends Control
 
 const Arabic = preload("res://assets/Arabic.ttf")
 const World = preload("res://game/world.gd")
+const Workbench = preload("res://game/workbench.gd")
 const BG := Color("#17120e")
 const PANEL := Color("#291f16")
 const CARD := Color("#382b1f")
@@ -41,6 +42,7 @@ var room_statuses: Array[Label] = []
 var room_dots: Array[Array] = []
 var modal: Control
 var modal_kind := ""
+var chore_board: Control
 var aura: ColorRect
 
 
@@ -136,7 +138,7 @@ func build_landscape(width: float) -> void:
 	build_event(Rect2(x, 449, inside, 110), 13)
 	build_shop(Rect2(x, 622, inside, 40))
 	line(Rect2(10, 680, width - 20, 1), LINE)
-	label(hud, Rect2(14, 683, 245, 32), "اسحب بإصبعك للتحرّك", 15, GOLD, HORIZONTAL_ALIGNMENT_LEFT)
+	label(hud, Rect2(14, 683, 245, 32), "اسحب وثبّت إصبعك للمشي", 15, GOLD, HORIZONTAL_ALIGNMENT_LEFT)
 	task_hint = label(hud, Rect2(262, 683, diary_x - 441, 32), "", 15, INK)
 	build_action(Rect2(diary_x - 169, 684, 161, 31), 15)
 
@@ -278,7 +280,7 @@ func set_text(control: Control, value: String) -> void:
 
 
 func can_resume() -> bool:
-	return modal_kind in ["pause", "shop"]
+	return modal_kind in ["pause", "shop", "chore"]
 
 
 func show_welcome() -> void:
@@ -287,11 +289,59 @@ func show_welcome() -> void:
 	label(card, Rect2(42, 61, 598, 74), "مناوبة بعد منتصف الليل", 41, INK, HORIZONTAL_ALIGNMENT_CENTER, true)
 	multiline(card, Rect2(66, 142, 550, 86), "عام ١٩٧٨. تعيّنت عامل خدمة غرف في فندق السِّراج. جهّز الغرف وسلّم الوردية عند الاستقبال. وإذا سمعت أثاثًا ينكسر في غرفة فاضية… راجع دفتر الوردية.", 17, SUB)
 	var keys := panel(card, Rect2(52, 246, 578, 69), Color("#382a1b"))
-	label(keys, Rect2(20, 5, 538, 29), "اسحب بإصبعك في الاتجاه اللي تبغى تتحرك فيه.", 18, INK, HORIZONTAL_ALIGNMENT_CENTER)
-	label(keys, Rect2(20, 33, 538, 27), "اقترب من المهمة والمس الشاشة. تقدّمك ينحفظ تلقائيًا.", 15, SUB, HORIZONTAL_ALIGNMENT_CENTER)
+	label(keys, Rect2(20, 5, 538, 29), "اسحب باتجاه المشي وخلّ إصبعك على الشاشة.", 18, INK, HORIZONTAL_ALIGNMENT_CENTER)
+	label(keys, Rect2(20, 33, 538, 27), "ارفع إصبعك للتوقف. اقترب من المهمة والمس الشاشة.", 15, SUB, HORIZONTAL_ALIGNMENT_CENTER)
 	var start := button(card, Rect2(179, 342, 324, 59), "تابع الوردية" if game.has_save else "ابدأ أول وردية", true)
 	start.pressed.connect(game.resume)
 	start.grab_focus()
+
+
+func show_chore(work: Vector2i) -> void:
+	var card := open_dialog("chore", Rect2(0, 0, 670, 454))
+	var headings := [
+		"مرّر المكنسة فوق أكوام الغبار.",
+		"حرّك الممسحة ذهابًا وإيابًا فوق كل بقعة حتى تجف.",
+		"شيل القديم، افرش النظيف، ثم رتّب المخدة.",
+		"شدّ المسامير لما يدخل المؤشر في المنطقة النحاسية.",
+	]
+	if work.y == 2 and game.upgrades[0]:
+		headings[2] = "شيل الشراشف القديمة، ثم افرش الطقم الجاهز."
+	label(card, Rect2(33, 16, 604, 42), "%s  ·  غرفة %d" % [game.TASK_NAMES[work.y], World.ROOM_NUMBERS[work.x]], 27, GOLD, HORIZONTAL_ALIGNMENT_RIGHT, true)
+	label(card, Rect2(33, 63, 604, 37), headings[work.y], 18, INK, HORIZONTAL_ALIGNMENT_RIGHT)
+	var board := Workbench.new()
+	board.layout_direction = Control.LAYOUT_DIRECTION_LTR
+	board.setup(work, game.shift, game.upgrades[0])
+	card.add_child(board)
+	board.size = Workbench.FRAME
+	board.position = Vector2(33, 111)
+	chore_board = board
+	var meter := panel(card, Rect2(33, 318, 604, 5), CARD)
+	var fill := ColorRect.new()
+	fill.color = TEAL
+	fill.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	meter.add_child(fill)
+	fill.size = Vector2(0, 5)
+	var status := label(card, Rect2(33, 329, 604, 28), "0 من %d" % board.goal, 16, SUB)
+	board.changed.connect(func(progress: float, feedback: String):
+		status.text = feedback
+		fill.size.x = 604 * progress
+		fill.position.x = 604 - fill.size.x
+	)
+	board.completed.connect(func():
+		if modal_kind == "chore" and chore_board == board:
+			game.complete_task(work)
+	)
+	var back := button(card, Rect2(33, 377, 126, 50), "ارجع للغرفة", false)
+	back.pressed.connect(game.resume)
+	if work.y == 2:
+		var actions := ["شيل القديم", "افرش النظيف", "رتّب المخدة"]
+		for index in board.goal:
+			var action := (index + 1) % board.goal
+			var choice := button(card, Rect2(190 + index * 150, 377, 142, 50), actions[action], true)
+			choice.pressed.connect(board.choose_linen.bind(action))
+	elif work.y == 3:
+		var tighten := button(card, Rect2(423, 377, 214, 50), "شدّ المسمار", true)
+		tighten.pressed.connect(board.tighten)
 
 
 func show_pause() -> void:
@@ -380,6 +430,7 @@ func close_dialog() -> void:
 		remove_child(modal)
 		modal.queue_free()
 		modal = null
+	chore_board = null
 	modal_kind = ""
 
 
