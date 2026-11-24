@@ -14,9 +14,49 @@ const Sub := Color("#c1ae91")
 const Gold := Color("#d8aa69")
 const Teal := Color("#bacb93")
 const Pink := Color("#e7a981")
-const MAP_ORIGIN := Vector2(10, 50)
-const DIARY_WIDTH := 228.0
-const MAP_HEIGHT := 625.0
+const MENU_NAMES := ["الإعدادات", "الضيوف", "دفتر الأعمال", "المتجر"]
+const MIN_TOUCH_PIXELS := 48.0
+
+enum Menu { SETTINGS, GUESTS, LEDGER, SHOP }
+
+class MenuIcon extends Control:
+	var kind := 0
+	var marked := false:
+		set(value):
+			if marked != value:
+				marked = value
+				queue_redraw()
+
+	func _draw() -> void:
+		draw_set_transform(size * 0.5)
+		var ink := Color("#e3b97d")
+		match kind:
+			Menu.SETTINGS:
+				draw_circle(Vector2.ZERO, 8, ink, false, 2, true)
+				draw_circle(Vector2.ZERO, 3, ink, false, 1.5, true)
+				for index in 8:
+					var direction := Vector2.from_angle(index * TAU / 8.0)
+					draw_line(direction * 7.5, direction * 12, ink, 2.5, true)
+			Menu.GUESTS:
+				draw_circle(Vector2(-4, -5), 4, ink)
+				draw_circle(Vector2(6, -4), 3, ink)
+				draw_arc(Vector2(-4, 9), 7, PI, TAU, 14, ink, 2, true)
+				draw_arc(Vector2(6, 9), 5, -PI * 0.5, 0, 9, ink, 2, true)
+			Menu.LEDGER:
+				draw_rect(Rect2(-10, -9, 20, 18), ink, false, 2)
+				draw_line(Vector2(0, -8), Vector2(0, 8), ink, 1.7)
+				for y in [-4, 1, 6]:
+					draw_line(Vector2(-7, y), Vector2(-3, y), ink, 1.5)
+					draw_line(Vector2(3, y), Vector2(7, y), ink, 1.5)
+			Menu.SHOP:
+				draw_rect(Rect2(-9, -4, 18, 14), ink, false, 2)
+				draw_line(Vector2(-11, -4), Vector2(-8, -10), ink, 2)
+				draw_line(Vector2(-8, -10), Vector2(8, -10), ink, 2)
+				draw_line(Vector2(8, -10), Vector2(11, -4), ink, 2)
+				draw_line(Vector2(-11, -4), Vector2(11, -4), ink, 2)
+				draw_rect(Rect2(-3, 2, 6, 8), ink, false, 1.5)
+		if marked:
+			draw_circle(Vector2(13, -12), 3, Color("#bdcb93"))
 
 var game: Node2D
 var hud: Control
@@ -25,18 +65,12 @@ var layout_in_progress := false
 var rotate_screen: ColorRect
 var rotate_note: Label
 var gesture_buttons: Array[Button] = []
-var room_buttons: Array[Button] = []
+var menu_icons: Array[MenuIcon] = []
 var furniture_icons: Array[AtlasTexture] = []
 var guest_icons: Array[AtlasTexture] = []
 var day_label: Label
 var balance_label: Label
-var reputation_label: Label
-var sound_button: Button
-var arrival_button: Button
-var action_button: Button
-var action_hint: Label
-var notice_label: Label
-var clock_fill: ColorRect
+var touch_icon_size := 0.0
 var flash: ColorRect
 var modal: Control
 var modal_card: Panel
@@ -87,9 +121,11 @@ func update_layout() -> void:
 	size = Vector2(layout)
 	if get_window().content_scale_size != layout:
 		get_window().content_scale_size = layout
-	if not is_instance_valid(hud) or (not needs_rotation and hud.size != size):
-		build_hud(Vector2(1280, 720) if needs_rotation else size)
-	hud.visible = not needs_rotation
+	var physical_scale := maxf(0.1, minf(float(screen.x) / width, float(screen.y) / 720.0))
+	var icon_size := maxf(54.0, ceilf(MIN_TOUCH_PIXELS / physical_scale))
+	if not is_instance_valid(hud) or (not needs_rotation and (hud.size != size or touch_icon_size != icon_size)):
+		build_hud(Vector2(1280, 720) if needs_rotation else size, icon_size if not needs_rotation else 54.0)
+	update_hud_visibility()
 	game.map_view.visible = not needs_rotation
 	if is_instance_valid(modal):
 		modal.visible = not needs_rotation
@@ -98,7 +134,7 @@ func update_layout() -> void:
 	layout_in_progress = false
 
 
-func build_hud(layout: Vector2) -> void:
+func build_hud(layout: Vector2, icon_size: float) -> void:
 	if is_instance_valid(hud):
 		hud.hide()
 		hud.queue_free()
@@ -106,52 +142,73 @@ func build_hud(layout: Vector2) -> void:
 	hud.layout_direction = Control.LAYOUT_DIRECTION_LTR
 	hud.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	add_child(hud)
-	move_child(hud, 0)
 	hud.position = Vector2.ZERO
 	hud.size = layout
+	touch_icon_size = icon_size
 	gesture_buttons.clear()
-	room_buttons.clear()
-	var side := layout.x - DIARY_WIDTH - 10.0
-	var map_size := Vector2(side - MAP_ORIGIN.x - 8.0, MAP_HEIGHT)
-	game.map_view.position = MAP_ORIGIN
+	menu_icons.clear()
+	var header := icon_size + 16.0
+	var map_size := Vector2(layout.x - 20.0, layout.y - header - 12.0)
+	game.map_view.position = Vector2(10, header + 3)
 	game.map_view.size = map_size
 	game.world.configure_camera(map_size)
-	var x := side + 11
-	var inside := DIARY_WIDTH - 22
-	line(hud, Rect2(10, 43, layout.x - 20, 1), Line)
-	label(hud, Rect2(14, 4, 195, 34), "١٩٧٨  ·  الطابق الأرضي", 15, Gold, HORIZONTAL_ALIGNMENT_LEFT)
-	label(hud, Rect2(side - 279, 0, 270, 41), "فندق السِّراج", 30, Ink)
-	sound_button = hud_button(Rect2(side, 4, 105, 34), "الصوت", game.toggle_sound)
-	hud_button(Rect2(side + 113, 4, 115, 34), "إيقاف", show_pause)
-	panel(hud, Rect2(side, MAP_ORIGIN.y, DIARY_WIDTH, MAP_HEIGHT), PanelColor)
-	label(hud, Rect2(x, 60, inside, 34), "دفتر الأعمال", 25, Gold)
-	day_label = label(hud, Rect2(x, 100, inside, 28), "", 17, Ink)
-	balance_label = label(hud, Rect2(x, 130, inside, 26), "", 17, Gold)
-	reputation_label = label(hud, Rect2(x, 155, inside, 26), "", 15, Teal)
-	line(hud, Rect2(x, 187, inside, 4), Line)
-	clock_fill = line(hud, Rect2(x + inside, 187, 0, 4), Teal)
-	for index in Rules.ROOM_COUNT:
-		var room_button := hud_button(Rect2(x, 200 + index * 44, inside, 40), "", show_room.bind(index))
-		room_button.add_theme_font_size_override("font_size", 15)
-		room_buttons.append(room_button)
-	var news := panel(hud, Rect2(x, 470, inside, 104), Card)
-	label(news, Rect2(10, 2, inside - 20, 23), "آخر حدث", 13, Gold)
-	notice_label = multiline(news, Rect2(10, 27, inside - 20, 68), "", 14, Ink)
-	arrival_button = hud_button(Rect2(x, 582, inside, 35), "الاستقبال", show_reception)
-	hud_button(Rect2(x, 625, inside, 35), "التطويرات والفريق", show_shop)
-	line(hud, Rect2(10, 680, layout.x - 20, 1), Line)
-	label(hud, Rect2(13, 683, 237, 32), "اسحب وثبّت إصبعك للمشي", 15, Gold, HORIZONTAL_ALIGNMENT_LEFT)
-	action_hint = label(hud, Rect2(250, 683, side - 456, 32), "", 15, Ink)
-	action_button = hud_button(Rect2(side - 181, 683, 173, 33), "تفاعل", game.tap_interact, true)
+	var strip := panel(hud, Rect2(12, (header - 39.0) * 0.5, 256, 39), PanelColor)
+	day_label = label(strip, Rect2(146, 2, 97, 35), "", 17, Ink)
+	balance_label = label(strip, Rect2(13, 2, 118, 35), "", 17, Gold, HORIZONTAL_ALIGNMENT_LEFT)
+	line(strip, Rect2(139, 9, 1, 21), Line)
+	for index in MENU_NAMES.size():
+		var left := layout.x - 12.0 - icon_size - index * (icon_size + 8.0)
+		var trigger := button(hud, Rect2(left, 8, icon_size, icon_size), "", false)
+		trigger.tooltip_text = MENU_NAMES[index]
+		trigger.accessibility_name = MENU_NAMES[index]
+		trigger.pressed.connect(toggle_menu.bind(index))
+		gesture_buttons.append(trigger)
+		var glyph := MenuIcon.new()
+		glyph.kind = index
+		glyph.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		place(trigger, glyph, Rect2(Vector2.ZERO, Vector2.ONE * icon_size))
+		menu_icons.append(glyph)
 	flash = line(hud, Rect2(0, 0, layout.x, 3), Color.TRANSPARENT)
 	refresh()
+	update_hud_visibility()
 
 
-func hud_button(rect: Rect2, text: String, action: Callable, primary: bool = false) -> Button:
-	var result := button(hud, rect, text, primary)
-	result.pressed.connect(action)
-	gesture_buttons.append(result)
-	return result
+func update_hud_visibility() -> void:
+	if is_instance_valid(hud):
+		var hidden := modal_kind in ["welcome", "summary", "chore", "new_game"]
+		if modal_kind == "diagnostics" and diagnostics_return == "welcome":
+			hidden = true
+		hud.visible = not needs_rotation and not hidden
+
+
+func menu_for(kind: String) -> int:
+	match kind:
+		"pause", "diagnostics", "new_game":
+			return Menu.SETTINGS
+		"reception", "stays":
+			return Menu.GUESTS
+		"ledger", "room":
+			return Menu.LEDGER
+		"shop", "furniture", "shop_rooms", "shop_room":
+			return Menu.SHOP
+	return -1
+
+
+func toggle_menu(index: int) -> void:
+	if not game.initialized or needs_rotation or game.backgrounded:
+		return
+	if menu_for(modal_kind) == index:
+		game.resume()
+		return
+	match index:
+		Menu.SETTINGS:
+			show_pause(true)
+		Menu.GUESTS:
+			show_stays()
+		Menu.LEDGER:
+			show_ledger()
+		Menu.SHOP:
+			show_shop()
 
 
 func show_rotation_prompt() -> void:
@@ -180,45 +237,12 @@ func refresh() -> void:
 	if not is_instance_valid(day_label) or not is_instance_valid(game.business):
 		return
 	var model: RefCounted = game.business
-	var remaining := maxi(0, Rules.DAY_SECONDS - int(model.second))
-	set_text(day_label, "اليوم %d  ·  %d ثانية" % [model.day, remaining])
-	set_text(balance_label, "الرصيد  %d ر.س" % model.cash)
-	set_text(reputation_label, "السمعة  %d / ١٠٠" % model.reputation)
-	var amount := (DIARY_WIDTH - 22) * clampf(float(model.second) / maxi(1, Rules.DAY_SECONDS), 0.0, 1.0)
-	var right := hud.size.x - 21
-	clock_fill.size.x = amount
-	clock_fill.position.x = right - amount
-	for index in room_buttons.size():
-		var status := "مغلقة · %d ر.س" % Rules.ROOM_PRICES[index]
-		if model.is_open(index):
-			var room: Dictionary = model.rooms[index]
-			var count: int = model.remaining_nights(index)
-			status = "مشغولة · %d ل" % count if count > 0 else "فاضية"
-			if room.clean < Rules.CLEANING_THRESHOLD:
-				status += " · تنظيف"
-			elif room.incident >= 0 or room.request >= 0 or room.broken != 0:
-				status += " · تحتاج خدمة"
-		set_text(room_buttons[index], "%d   %s" % [101 + index, status])
-	set_text(arrival_button, "الاستقبال  ·  %d ينتظرون" % model.waiting.size() if not model.waiting.is_empty() else "الاستقبال")
-	set_text(sound_button, "صوت مغلق" if game.muted else "الصوت")
-	set_text(notice_label, game.notice if not game.notice.is_empty() else "جهّز سريرًا للغرفة ١٠١ واستقبل أول ضيف.")
-	refresh_action()
+	set_text(day_label, "اليوم %d" % model.day)
+	set_text(balance_label, "%d ر.س" % model.cash)
+	if menu_icons.size() == MENU_NAMES.size():
+		menu_icons[Menu.GUESTS].marked = not model.waiting.is_empty()
+		menu_icons[Menu.LEDGER].marked = model.task_room >= 0
 	update_flash()
-
-
-func refresh_action() -> void:
-	if not is_instance_valid(action_button):
-		return
-	action_button.disabled = game.target == game.NO_TARGET
-	if game.target >= 0:
-		set_text(action_hint, "خانات الأثاث والمهام في دفتر الغرفة.")
-		set_text(action_button, "إدارة الغرفة %d" % (101 + game.target))
-	elif game.target == game.RECEPTION:
-		set_text(action_hint, "استقبل الضيوف واختر لهم غرفة جاهزة.")
-		set_text(action_button, "فتح الاستقبال")
-	else:
-		set_text(action_hint, "اقترب من غرفة أو من مكتب الاستقبال.")
-		set_text(action_button, "تفاعل")
 
 
 func update_flash() -> void:
@@ -227,35 +251,74 @@ func update_flash() -> void:
 
 
 func can_resume() -> bool:
-	return modal_kind in ["pause", "room", "furniture", "reception", "shop", "chore"]
+	return modal_kind not in ["welcome", "summary", ""]
 
 
 func show_welcome() -> void:
 	var card := open_dialog("welcome", Vector2(680, 434))
 	label(card, Rect2(34, 30, 612, 38), "فندق السِّراج  ·  ١٩٧٨", 23, Gold, HORIZONTAL_ALIGNMENT_CENTER)
 	label(card, Rect2(32, 81, 616, 62), "المفتاح صار لك", 44, Ink, HORIZONTAL_ALIGNMENT_CENTER)
-	multiline(card, Rect2(58, 154, 564, 103), "تبدأ مالكًا للفندق. جهّز الغرفة ١٠١ بسرير من متجر الأثاث، واستقبل المسافرين وسكّنهم. راقب النظافة وخذ حساب كل يوم من دفتر الأعمال.", 21, Sub)
+	multiline(card, Rect2(58, 154, 564, 103), "اسحب إصبعك للمشي، والمس داخل الغرفة للتفاعل. جهّز الغرفة ١٠١ بسرير من المتجر، وتابع المسافرين والمهام من الأيقونات.", 21, Sub)
 	var start := button(card, Rect2(177, 279, 326, 58), "تابع إدارة الفندق" if game.has_save else "افتح الفندق", true)
 	start.pressed.connect(game.resume)
 	start.grab_focus()
 	button(card, Rect2(249, 356, 182, 40), "سجل الأخطاء", false).pressed.connect(show_diagnostics.bind("welcome"))
 
 
-func show_room(index: int) -> void:
+func show_ledger() -> void:
+	var model: RefCounted = game.business
+	var card := open_dialog("ledger", Vector2(842, 545))
+	label(card, Rect2(78, 18, 731, 52), "دفتر الأعمال", 32, Ink)
+	label(card, Rect2(32, 70, 778, 32), "اليوم %d · متبقي %d ثانية · الرصيد %d ر.س · السمعة %d/١٠٠" % [
+		model.day, maxi(0, Rules.DAY_SECONDS - int(model.second)), model.cash, model.reputation,
+	], 17, Gold)
+	var job := panel(card, Rect2(31, 111, 780, 119), Card)
+	label(job, Rect2(15, 5, 750, 31), "المهمة الحالية", 20, Gold)
+	var reason: String = model.task_reason if model.task_room >= 0 else "ما فيه مهمة نشطة."
+	var left: int = model.task_seconds_left()
+	if model.task_room >= 0 and left > 0:
+		reason += "  ·  %d ثانية" % left
+	multiline(job, Rect2(15, 39, 750, 30), reason, 17, Ink)
+	if model.task_room >= 0:
+		var room: int = model.task_room
+		button(job, Rect2(551, 75, 214, 33), "افتح الغرفة %d" % (101 + room), true).pressed.connect(show_room.bind(room))
+		button(job, Rect2(15, 75, 156, 33), "تجاهل المهمة", false).pressed.connect(func():
+			if game.ignore_task(room):
+				show_ledger()
+		)
+	label(card, Rect2(31, 241, 780, 32), "الغرف", 22, Gold)
+	for index in Rules.ROOM_COUNT:
+		var x := 31 + (index % 2) * 395
+		var y := 278 + int(index / 2.0) * 55
+		var status := "مغلقة · %d ر.س" % Rules.ROOM_PRICES[index]
+		if model.is_open(index):
+			var room: Dictionary = model.rooms[index]
+			var nights: int = model.remaining_nights(index)
+			status = "مشغولة · %d ليالٍ" % nights if nights > 0 else "فاضية"
+			if model.is_clean_protected(index):
+				status += " · محمية %d ث" % model.clean_seconds(index)
+			elif room.clean < Rules.CLEANING_THRESHOLD:
+				status += " · تحتاج تنظيف"
+		button(card, Rect2(x, y, 384, 44), "%d  ·  %s" % [101 + index, status], index == model.task_room).pressed.connect(show_room.bind(index))
+	var note: String = game.notice if not game.notice.is_empty() else "حضّر سريرًا للغرفة ١٠١ واستقبل أول ضيف."
+	multiline(card, Rect2(31, 458, 780, 54), note, 16, Sub)
+
+
+func show_room(index: int, from_shop: bool = false) -> void:
 	var model: RefCounted = game.business
 	if not model.valid_room(index):
 		return
 	if not model.is_open(index):
-		show_locked_room(index)
+		show_locked_room(index, from_shop)
 		return
 	var state: Dictionary = model.rooms[index]
-	var card := open_dialog("room", Vector2(842, 518))
+	var card := open_dialog("shop_room" if from_shop else "room", Vector2(842, 518))
 	label(card, Rect2(30, 18, 782, 52), "الغرفة %d" % (101 + index), 31, Ink)
 	var detail := "النظافة %d%%   ·   الراحة %d   ·   الجاذبية %d   ·   الإيجار %d ر.س / ليلة" % [roundi(state.clean), model.comfort(index), model.appeal(index), model.nightly_rate(index)]
 	label(card, Rect2(28, 76, 786, 26), detail, 17, Gold)
 	var occupancy := "غرفة فاضية" if state.guest.is_empty() else "%s  ·  متبقّي %d ليلة" % [model.guest_name(state.guest), model.remaining_nights(index)]
-	if state.request >= 0:
-		occupancy += "   |   %s · %d ثانية · مكافأة %d ر.س" % [model.request_name(index), state.deadline, Rules.REQUEST_REWARDS[state.request]]
+	if model.task_room == index and state.request >= 0:
+		occupancy += "   |   %s · %d ثانية · مكافأة %d ر.س" % [model.request_name(index), model.task_seconds_left(), Rules.REQUEST_REWARDS[state.request]]
 	label(card, Rect2(28, 104, 786, 27), occupancy, 15, Sub)
 	label(card, Rect2(29, 139, 516, 25), "خانات الأثاث", 17, Gold)
 	for slot in Rules.SLOT_COUNT:
@@ -274,25 +337,24 @@ func show_room(index: int) -> void:
 		choose.pressed.connect(show_furniture.bind(index, slot))
 	var at_room := World.room_at(game.player) == index
 	label(card, Rect2(563, 139, 251, 25), "مهام الغرفة", 17, Gold)
-	var y_job := 174
-	if model.can_do_task(index, Task.CLEAN):
-		room_job(card, y_job, index, Task.CLEAN, -1, at_room)
-		y_job += 41
-	for slot in Rules.SLOT_COUNT:
-		if model.can_do_task(index, Task.REPAIR, slot):
-			room_job(card, y_job, index, Task.REPAIR, slot, at_room)
-			y_job += 41
-			break
-	if state.incident >= 0:
-		room_job(card, y_job, index, state.incident, -1, at_room)
-		y_job += 41
-		if state.incident == Task.CALM:
-			room_job(card, y_job, index, Task.BANISH, -1, at_room)
-			y_job += 41
-	if y_job == 174:
-		multiline(card, Rect2(563, y_job + 5, 251, 53), "الغرفة هادئة حاليًا.", 16, Sub)
-	elif not at_room:
-		multiline(card, Rect2(563, y_job + 5, 251, 50), "ادخل الغرفة لتنفيذ المهام.", 15, Sub)
+	if model.task_room == index:
+		multiline(card, Rect2(563, 171, 251, 66), model.task_reason, 15, Sub)
+		if model.task_kind == Task.AMENITY:
+			multiline(card, Rect2(563, 244, 251, 52), "اشترِ القطعة المطلوبة وضعها في إحدى الخانات.", 15, Ink)
+		elif model.can_do_task(index, model.task_kind, model.task_slot):
+			room_job(card, 242, index, model.task_kind, model.task_slot, at_room)
+			if model.task_kind == Task.CALM:
+				room_job(card, 284, index, Task.BANISH, -1, at_room)
+			if not at_room:
+				label(card, Rect2(563, 324, 251, 30), "ادخل الغرفة لتنفيذ المهمة.", 15, Sub)
+		button(card, Rect2(563, 365, 251, 37), "تجاهل المهمة مؤقتًا", false).pressed.connect(func():
+			if game.ignore_task(index):
+				show_room(index, from_shop)
+		)
+	elif model.is_clean_protected(index):
+		multiline(card, Rect2(563, 178, 251, 67), "الغرفة نظيفة ومحمية لمدة %d ثانية." % model.clean_seconds(index), 16, Teal)
+	else:
+		label(card, Rect2(563, 174, 251, 36), "ما فيه مهمة نشطة هنا.", 16, Sub)
 	button(card, Rect2(28, 454, 167, 44), "رجوع للفندق", false).pressed.connect(game.resume)
 
 
@@ -300,22 +362,22 @@ func room_job(card: Control, y: float, room: int, kind: int, slot: int, in_room:
 	if kind < 0 or kind >= Rules.TASK_NAMES.size():
 		return
 	var title: String = Rules.TASK_NAMES[kind]
-	if slot >= 0:
+	if kind == Task.REPAIR and slot >= 0:
 		title = "إصلاح · " + Rules.ITEM_NAMES[Rules.item_kind(game.business.slot_item(room, slot))]
 	var job := button(card, Rect2(562, y, 250, 36), title, false)
 	job.disabled = not in_room
 	job.pressed.connect(game.start_task.bind(room, kind, slot))
 
 
-func show_locked_room(index: int) -> void:
-	var card := open_dialog("room", Vector2(530, 316))
+func show_locked_room(index: int, from_shop: bool) -> void:
+	var card := open_dialog("shop_room" if from_shop else "room", Vector2(530, 316))
 	label(card, Rect2(32, 23, 466, 54), "شراء الغرفة %d" % (101 + index), 29, Ink)
 	multiline(card, Rect2(32, 95, 466, 74), "الغرفة تُفتح فارغة. أثّثها بسرير لتقدر تسكّن فيها ضيفًا.", 19, Sub)
 	var purchase := button(card, Rect2(240, 206, 258, 52), "افتح الغرفة · %d ر.س" % Rules.ROOM_PRICES[index], true)
 	purchase.disabled = game.business.cash < Rules.ROOM_PRICES[index]
 	purchase.pressed.connect(func():
 		if game.buy_room(index):
-			show_room(index)
+			show_room(index, from_shop)
 	)
 	button(card, Rect2(32, 206, 157, 52), "رجوع", false).pressed.connect(game.resume)
 
@@ -325,7 +387,9 @@ func show_furniture(room: int, slot: int, kind: int = -1) -> void:
 	if not model.is_open(room) or slot < 0 or slot >= Rules.SLOT_COUNT:
 		return
 	if kind < 0:
-		kind = maxi(0, Rules.item_kind(model.slot_item(room, slot)))
+		var requested: int = model.rooms[room].requested_item
+		kind = requested if model.task_room == room and model.task_kind == Task.AMENITY else Rules.item_kind(model.slot_item(room, slot))
+	kind = clampi(kind, 0, Rules.ITEM_NAMES.size() - 1)
 	var card := open_dialog("furniture", Vector2(796, 526))
 	label(card, Rect2(30, 19, 736, 51), "متجر الأثاث · الغرفة %d" % (101 + room), 30, Ink)
 	label(card, Rect2(30, 72, 736, 30), "الخانة %d  ·  الرصيد %d ر.س" % [slot + 1, model.cash], 16, Gold)
@@ -344,11 +408,11 @@ func show_furniture(room: int, slot: int, kind: int = -1) -> void:
 		buy.disabled = not model.can_place(room, slot, item)
 		buy.pressed.connect(func():
 			if game.buy_item(room, slot, item):
-				show_room(room)
+				show_room(room, true)
 			else:
 				feedback.text = "ابتعد عن مكان القطعة وتأكد من الرصيد وحالة الغرفة."
 		)
-	button(card, Rect2(31, 456, 166, 43), "رجوع للغرفة", false).pressed.connect(show_room.bind(room))
+	button(card, Rect2(31, 456, 166, 43), "رجوع للغرفة", false).pressed.connect(show_room.bind(room, true))
 
 
 func show_reception(selected: int = -1) -> void:
@@ -359,6 +423,7 @@ func show_reception(selected: int = -1) -> void:
 	var card := open_dialog("reception", Vector2(816, 502))
 	label(card, Rect2(29, 20, 758, 53), "مكتب الاستقبال", 31, Ink)
 	button(card, Rect2(29, 437, 166, 46), "رجوع للفندق", false).pressed.connect(game.resume)
+	button(card, Rect2(210, 437, 194, 46), "النزلاء المقيمون", false).pressed.connect(show_stays)
 	if guest.is_empty():
 		multiline(card, Rect2(135, 159, 546, 100), "المكتب فاضي الآن. الضيوف يوصلون مع مرور الوقت، وتزيد الطلبات كلما تحسّنت سمعة الفندق.", 22, Sub)
 		return
@@ -390,6 +455,30 @@ func show_reception(selected: int = -1) -> void:
 		)
 
 
+func show_stays() -> void:
+	var model: RefCounted = game.business
+	var card := open_dialog("stays", Vector2(888, 580))
+	label(card, Rect2(77, 18, 776, 54), "الضيوف المقيمون", 31, Ink)
+	var y := 109
+	for index in Rules.ROOM_COUNT:
+		var state: Dictionary = model.rooms[index]
+		if state.guest.is_empty():
+			continue
+		var guest: Dictionary = state.guest
+		var row := panel(card, Rect2(25, y, 836, 57), Card)
+		icon(row, Rect2(765, 0, 66, 55), guest_icons[guest.look])
+		label(row, Rect2(462, 2, 299, 26), "%s · %d" % [model.guest_name(guest), 101 + index], 17, Gold)
+		label(row, Rect2(448, 29, 313, 23), "%s · %d ليالٍ" % [Rules.PREFERENCES[guest.preference], model.remaining_nights(index)], 14, Sub)
+		label(row, Rect2(16, 3, 416, 25), "الرضا %d%%" % roundi(model.guest_score(index) * 20), 15, Teal, HORIZONTAL_ALIGNMENT_LEFT)
+		var request: String = model.request_name(index) if model.task_room == index else ""
+		label(row, Rect2(16, 29, 416, 23), "طلب %s · %d ثانية" % [request, model.task_seconds_left()] if not request.is_empty() else "ما فيه طلب حالي.", 15, Ink, HORIZONTAL_ALIGNMENT_LEFT)
+		y += 63
+	if y == 109:
+		label(card, Rect2(31, 220, 826, 38), "ما فيه ضيوف مقيمون حاليًا.", 19, Sub, HORIZONTAL_ALIGNMENT_CENTER)
+	button(card, Rect2(28, 511, 173, 44), "رجوع للفندق", false).pressed.connect(game.resume)
+	button(card, Rect2(216, 511, 245, 44), "الاستقبال · %d منتظر" % model.waiting.size(), true).pressed.connect(show_reception)
+
+
 func show_shop() -> void:
 	var model: RefCounted = game.business
 	var card := open_dialog("shop", Vector2(744, 524))
@@ -416,6 +505,20 @@ func show_shop() -> void:
 	label(card, Rect2(228, 344, 485, 32), "عامل تنظيف  ·  %d ر.س يوميًا" % Rules.CLEANER_WAGE, 19, Gold)
 	label(card, Rect2(228, 372, 485, 33), "ينظّف أكثر الغرف اتساخًا على دفعات." if model.employee else "يساعدك على رفع النظافة تلقائيًا خلال اليوم.", 15, Sub)
 	button(card, Rect2(27, 443, 166, 45), "رجوع للفندق", false).pressed.connect(game.resume)
+	button(card, Rect2(504, 443, 212, 45), "متجر الأثاث", true).pressed.connect(show_shop_rooms)
+
+
+func show_shop_rooms() -> void:
+	var model: RefCounted = game.business
+	var card := open_dialog("shop_rooms", Vector2(695, 426))
+	label(card, Rect2(79, 20, 585, 50), "متجر الأثاث", 30, Ink)
+	label(card, Rect2(30, 80, 633, 32), "اختر غرفة لشراء الأثاث أو وضع قطعة جديدة.", 17, Sub)
+	for index in Rules.ROOM_COUNT:
+		var x := 30 + index % 2 * 324
+		var y := 128 + int(index / 2.0) * 60
+		var suffix: String = "مفتوحة" if model.is_open(index) else "%d ر.س لفتحها" % Rules.ROOM_PRICES[index]
+		button(card, Rect2(x, y, 306, 49), "الغرفة %d · %s" % [101 + index, suffix], model.is_open(index)).pressed.connect(show_room.bind(index, true))
+	button(card, Rect2(30, 337, 232, 45), "التطويرات والفريق", false).pressed.connect(show_shop)
 
 
 func show_chore(room: int, kind: int, slot: int) -> void:
@@ -491,10 +594,40 @@ func show_summary() -> void:
 func show_pause(from_diagnostics: bool = false) -> void:
 	if game.paused and not from_diagnostics:
 		return
-	var card := open_dialog("pause", Vector2(493, 259))
-	label(card, Rect2(30, 33, 433, 60), "الفندق متوقف مؤقتًا", 30, Ink, HORIZONTAL_ALIGNMENT_CENTER)
-	button(card, Rect2(240, 145, 219, 54), "تابع إدارة الفندق", true).pressed.connect(game.resume)
-	button(card, Rect2(34, 145, 187, 54), "سجل الأخطاء", false).pressed.connect(show_diagnostics.bind("pause"))
+	var card := open_dialog("pause", Vector2(664, 426))
+	label(card, Rect2(81, 18, 552, 52), "الإعدادات", 32, Ink)
+	label(card, Rect2(29, 78, 603, 35), "الصوت", 20, Gold)
+	var sound := button(card, Rect2(34, 78, 174, 38), "مغلق" if game.muted else "شغّال", false)
+	sound.pressed.connect(func():
+		game.toggle_sound()
+		set_text(sound, "مغلق" if game.muted else "شغّال")
+	)
+	label(card, Rect2(30, 129, 603, 36), "سرعة المشي", 20, Gold)
+	for index in Rules.SPEED_LABELS.size():
+		var choice := button(card, Rect2(31 + index * 204, 174, 194, 45), Rules.SPEED_LABELS[index], game.player_speed_index == index)
+		choice.pressed.connect(func():
+			game.set_player_speed(index)
+			show_pause(true)
+		)
+	var state := label(card, Rect2(30, 299, 603, 32), "", 17, Teal)
+	button(card, Rect2(31, 248, 194, 46), "سجل الأخطاء", false).pressed.connect(show_diagnostics.bind("pause"))
+	button(card, Rect2(235, 248, 194, 46), "حفظ الآن", true).pressed.connect(func():
+		state.text = "تم الحفظ." if game.save_game() else "تعذّر الحفظ."
+	)
+	button(card, Rect2(439, 248, 194, 46), "لعبة جديدة", false).pressed.connect(show_new_game)
+	button(card, Rect2(221, 355, 222, 46), "تابع إدارة الفندق", true).pressed.connect(game.resume)
+
+
+func show_new_game() -> void:
+	var card := open_dialog("new_game", Vector2(576, 331))
+	label(card, Rect2(79, 19, 465, 52), "بدء لعبة جديدة", 30, Ink)
+	multiline(card, Rect2(35, 96, 506, 90), "راح تبدأ من اليوم الأول برصيد ١٠٠ ر.س والغرفة ١٠١ فارغة. هذه الخطوة تستبدل تقدّم الفندق الحالي.", 20, Sub)
+	var status := label(card, Rect2(36, 181, 504, 27), "", 16, Pink)
+	button(card, Rect2(33, 226, 197, 51), "إلغاء", false).pressed.connect(show_pause.bind(true))
+	button(card, Rect2(276, 226, 266, 51), "ابدأ لعبة جديدة", true).pressed.connect(func():
+		if not game.start_new_game():
+			status.text = "تعذّر بدء اللعبة الجديدة وحُفظ تقدّمك."
+	)
 
 
 func show_diagnostics(from: String) -> void:
@@ -531,15 +664,42 @@ func open_dialog(kind: String, dimensions: Vector2) -> Panel:
 	close_dialog()
 	game.paused = true
 	modal_kind = kind
-	modal = ColorRect.new()
-	modal.color = Color(0.057, 0.041, 0.022, 0.84)
-	modal.mouse_filter = Control.MOUSE_FILTER_STOP
-	add_child(modal)
+	var shade := ColorRect.new()
+	modal = shade
+	shade.color = Color(0.057, 0.041, 0.022, 0.84)
+	shade.mouse_filter = Control.MOUSE_FILTER_STOP
+	add_child(shade)
 	modal.visible = not needs_rotation
 	modal_card = panel(modal, Rect2(Vector2.ZERO, dimensions), Color("#2e2218"))
+	modal_card.mouse_filter = Control.MOUSE_FILTER_STOP
 	line(modal_card, Rect2(43, 0, dimensions.x - 86, 2), Gold)
+	if kind not in ["welcome", "summary"]:
+		var closer := button(modal_card, Rect2(14, 14, 46, 42), "✕", false)
+		closer.tooltip_text = "إغلاق"
+		closer.accessibility_name = "إغلاق"
+		closer.pressed.connect(dismiss_dialog.bind(shade))
+		shade.gui_input.connect(func(event: InputEvent):
+			var is_touch: bool = event is InputEventScreenTouch and event.pressed and not event.canceled
+			var is_click: bool = event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT and event.pressed
+			if (is_touch or is_click) and modal == shade and is_instance_valid(modal_card):
+				if not Rect2(modal_card.position, modal_card.size).has_point(event.position):
+					dismiss_dialog.call_deferred(shade)
+		)
 	position_dialog()
+	move_child(hud, -1)
+	if is_instance_valid(rotate_screen) and rotate_screen.visible:
+		move_child(rotate_screen, -1)
+	update_hud_visibility()
 	return modal_card
+
+
+func dismiss_dialog(shade: Control) -> void:
+	if not is_instance_valid(shade) or modal != shade or modal_kind in ["welcome", "summary"]:
+		return
+	if modal_kind == "diagnostics" and diagnostics_return == "welcome":
+		show_welcome()
+	else:
+		game.resume()
 
 
 func position_dialog() -> void:
@@ -557,6 +717,7 @@ func close_dialog() -> void:
 	modal_card = null
 	chore_board = null
 	modal_kind = ""
+	update_hud_visibility()
 
 
 func set_text(control: Control, value: String) -> void:

@@ -1,6 +1,13 @@
 extends RefCounted
 
 const PLAYER_SPEED := 82.5
+const SPEED_MULTIPLIERS := [0.82, 1.0, 1.18]
+const SPEED_LABELS := ["هادئة", "عادية", "أسرع"]
+const CAMERA_ZOOM := 1.95
+const ROOM_CAMERA_MULTIPLIER := 1.5
+const CAMERA_FOLLOW_SPEED := 7.0
+const CAMERA_ROOM_MARGIN := 22.0
+const CAMERA_FADE_SECONDS := 0.30
 const STARTING_CASH := 100
 const STARTING_REPUTATION := 35
 const DAY_SECONDS := 100
@@ -20,9 +27,15 @@ const REQUEST_INTERVAL := Vector2i(28, 54)
 const REQUEST_REWARDS := [10, 14, 18]
 const OCCUPIED_DIRT_PER_SECOND := 0.31
 const EMPTY_DIRT_PER_SECOND := 0.045
+const STAY_DIRT_PER_DAY := 0.035
 const LEAK_DIRT_PER_SECOND := 0.29
+const EVENT_DIRT_PER_SECOND := 0.58
+const CHECKOUT_DIRT := 9.0
+const CLEAN_COOLDOWN := 90
 const CLEANING_THRESHOLD := 88.0
-const CLEANING_GAIN := 74.0
+const TASK_GAP := 5
+const TASK_IGNORE_SECONDS := 0
+const IGNORED_ROOM_COOLDOWN := 38
 const BASE_NIGHTLY_RATE := 34
 const COMFORT_RATE := 0.65
 const CLEANLINESS_RATE := 0.17
@@ -34,23 +47,27 @@ const CLEANER_WAGE := 17
 const CLEANER_INTERVAL := 18
 const CLEANER_GAIN := 18.0
 const HAUNT_FIRST_DAY := 2
-const HAUNT_FIRST_SECOND := 19
-const HAUNT_MIN_INTERVAL := 17
-const HAUNT_START_INTERVAL := 52
+const HAUNT_FIRST_SECOND := 90
+const HAUNT_INTERVAL := Vector2i(90, 180)
+const HAUNT_ROOM_COOLDOWN := 220
+const HAUNT_ACCELERATION_PER_DAY := 8
+const BANISH_DELAY := 50
 const HAUNT_DIRT := 24.0
-const MAINTENANCE_INTERVAL := Vector2i(35, 63)
+const MAINTENANCE_INTERVAL := 72
+const MAINTENANCE_FIRST_SECOND := 60
+const LEAK_EVENT_DIRT := 13.0
 
 const UPGRADE_NAMES := ["عربة تنظيف أسرع", "أقفال تحمي الأثاث", "تجهيزات للضيوف"]
 const UPGRADE_PRICES := [140, 210, 300]
 const AMENITIES_NIGHTLY_BONUS := 12
 const LOCK_BREAK_RISK_PERCENT := 0
 
-enum Task { CLEAN, REPAIR, LEAK, BULB, CALM, BANISH, KEY }
+enum Task { CLEAN, REPAIR, LEAK, BULB, CALM, BANISH, KEY, AMENITY }
 enum Request { CLEAN, REPAIR, AMENITY }
 enum Item { BED, DESK, CHAIR, RUG, LAMP, WARDROBE, TV }
 enum Preference { CLEAN, COMFORT, BUDGET }
 
-const TASK_NAMES := ["كنس ومسح", "إصلاح الأثاث", "إيقاف التسريب", "تبديل اللمبة", "تهدئة الضيف", "طرد الجن", "البحث عن المفتاح"]
+const TASK_NAMES := ["كنس ومسح", "إصلاح الأثاث", "إيقاف التسريب", "تبديل اللمبة", "تهدئة الضيف", "طرد الجن", "البحث عن المفتاح", "توفير قطعة أثاث"]
 const PREFERENCES := ["يهتم بالنظافة", "يفضّل الأثاث المريح", "ميزانيته محدودة"]
 const GUEST_TIERS := ["مسافر", "نزيل ميسور", "نزيل مميّز"]
 const GUEST_NAMES := ["سالم العتيبي", "فهد النجار", "حسن الصيّاد", "يوسف المرسي", "ماجد البحري", "علي الدرويش", "خالد الرفاعي", "سعيد منصور", "ناصر الصالح", "كريم أمين", "إبراهيم حمزة", "عبدالله جابر"]
