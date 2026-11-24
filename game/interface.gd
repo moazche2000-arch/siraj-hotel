@@ -21,6 +21,7 @@ var game: Node2D
 var ui_theme: Theme
 var hud: Control
 var needs_rotation := false
+var layout_in_progress := false
 var rotate_screen: ColorRect
 var rotate_note: Label
 var gesture_buttons: Array[Button] = []
@@ -69,9 +70,14 @@ func _ready() -> void:
 
 
 func update_layout() -> void:
+	if layout_in_progress:
+		return
 	var screen := get_window().size
 	if screen.x <= 0 or screen.y <= 0:
-		return
+		if is_instance_valid(hud):
+			return
+		screen = Vector2i(1280, 720)
+	layout_in_progress = true
 	needs_rotation = screen.x < screen.y
 	var width := clampi(roundi(720.0 * screen.x / screen.y), 1080, 1820)
 	var landscape := Vector2i(width, 720)
@@ -90,6 +96,7 @@ func update_layout() -> void:
 		modal.visible = not needs_rotation
 		position_dialog()
 	show_rotation_prompt()
+	layout_in_progress = false
 
 
 func build_hud(layout: Vector2) -> void:
